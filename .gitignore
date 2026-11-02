@@ -1,0 +1,10 @@
+# Build artifacts
+*.o
+*.out
+a.out
+dda_fft.out
+dda
+
+# Run artifacts
+*.dst
+*.dat
