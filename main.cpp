@@ -5,6 +5,122 @@
 #include "function.hpp"
 #include "randomize.hpp"
 
+#include <thread>
+#include <vector>
+#include <mutex>
+#include <atomic>
+#include <unistd.h>
+
+
+/****************************************************************************/
+/****************************** Parallel workers ****************************/
+/****************************************************************************/
+
+/* Amount of physical memory in bytes, 0 if it cannot be determined. */
+
+static double physical_memory(void)
+{   long pages=sysconf(_SC_PHYS_PAGES);
+    long size=sysconf(_SC_PAGE_SIZE);
+
+    if(pages<=0||size<=0)   return 0.;
+    return (double)pages*(double)size;
+}
+
+/* Bytes that one worker needs on top of the shared A-matrix: the four field
+   arrays, the padded convolution buffer, the two BiCGStab arrays and the
+   occupancy map. */
+
+/* DDA_THREADS from the environment if it is set, one worker per core
+   otherwise, but never more workers than the private workspaces allow.
+
+   One worker needs the six i*j*l field arrays (cvP, cvP_min, cvR, cvS, cvG,
+   cvH), the padded 2i x 2j x 2l convolution buffer and the occupancy map;
+   the A-matrix is shared by all of them. */
+
+static int worker_count(int i_max, int j_max, int l_max)
+{   const char * s=getenv("DDA_THREADS");
+    double shared,footprint,budget;
+    int n,fits;
+
+    n=(int)sysconf(_SC_NPROCESSORS_ONLN);
+    if(n<1) n=1;
+
+    if(s!=NULL)
+    {   int v=atoi(s);
+        if(v>0) n=v;
+    }
+
+    {   double cells=(double)i_max*(double)j_max*(double)l_max;
+
+        footprint=6.*cells*sizeof(cvector)+8.*cells*sizeof(cvector)+cells;
+        shared=8.*cells*sizeof(cmatrix);
+    }
+
+    budget=0.7*physical_memory()-shared;
+    if(budget<=0.||footprint<=0.)   return n;
+
+    fits=(int)(budget/footprint);
+    if(fits<1)  fits=1;
+    if(fits<n)
+    {   printf("\n %d worker(s) fit into memory, %.0f MB each; using %d.",
+               fits,footprint/1048576.,fits);
+        printf("\n Set DDA_THREADS to change this. ");
+        fflush(stdout);
+        n=fits;
+    }
+
+    return n;
+}
+
+/* Contiguous storage for the occupancy map of one worker. */
+
+static char *** alloc_char3(int ni, int nj, int nl)
+{   size_t ncell=(size_t)ni*(size_t)nj*(size_t)nl;
+    char *** p=(char ***)malloc((size_t)ni*sizeof(char **));
+    char ** rows=(char **)malloc((size_t)ni*(size_t)nj*sizeof(char *));
+    char * blk=(char *)malloc(ncell*sizeof(char));
+    int i,j;
+
+    if(p==NULL||rows==NULL||blk==NULL)
+    {   printf("\n No enough memory for the occupancy map! ");
+        exit(1);
+    }
+
+    for(i=0;i<ni;i++)
+    {   p[i]=rows+(size_t)i*nj;
+        for(j=0;j<nj;j++)
+            p[i][j]=blk+((size_t)i*nj+j)*nl;
+    }
+
+    return p;
+}
+
+static void free_char3(char *** p)
+{   if(p==NULL)  return;
+    free(p[0][0]);
+    free(p[0]);
+    free(p);
+}
+
+/* Everything that a worker owns privately. The A-matrix, the FFT tables and
+   the reference geometry are shared between the workers and only read. */
+
+typedef
+    struct
+    {   char *** cAlpha;             /* occupancy map of the current sample    */
+        cplx * cListMaterials;       /* polarizabilities, may vary by sample   */
+        vector * vNormal;            /* normals of the scattering planes       */
+        vector ** ksc;               /* scattering directions                  */
+        vector kinc;                 /* incident wave vector                   */
+        cvector Einc[2];             /* incident field, two polarizations      */
+        cvector ** Esc[2];           /* scattered field, two polarizations    */
+        cylinder * worms;            /* geometry of the worm-like samples      */
+        dda_workspace ws;            /* scratch arrays of the solver           */
+        mmuller * mmAcc;             /* Muller matrix of this sample           */
+        mmuller * mm0;               /* scratch for the averaging              */
+    }
+    dda_worker;
+
 
 int main(int argc, char ** argv)
 {   time_t time_begin,time_end;
@@ -42,7 +158,9 @@ int main(int argc, char ** argv)
 
     char *** cAlpha;
     cmatrix *** cmA;
-    dda_workspace ws;
+    dda_worker * vWorkers;
+    int iWorkers,iFirstRealization,iTasks;
+    real psiFixed,iotaFixed,kappaFixed;
     FILE * output_data,* storage_data;
 
     printf("\nComputation of light scattering by arbitrary target:");
@@ -986,9 +1104,6 @@ int main(int argc, char ** argv)
             }
         }
 
-/* The scratch arrays of the solver are allocated once for the whole run. */
-
-    dda_workspace_create(&ws,i_max,j_max,l_max,iMode_SolutionMethod);
 
 
 /****************************************************************************/
@@ -1158,164 +1273,344 @@ int main(int argc, char ** argv)
         fclose(output_data);
     }
 
-    while(iRealizationCounter<iRealizationNumber)
-    {   if(iChoiceStructure==1)
-            iNoD=iGenerateEllipsoid(i_max,j_max,l_max,1.,1.,cAlpha);
+/****************************************************************************/
+/********************** Parallel solution over the samples ******************/
+/****************************************************************************/
 
-        if(iChoiceStructure==2)
-            iNoD=iGenerateEllipsoid(i_max,j_max,l_max,b_a,c_a,cAlpha);
+/* The samples are independent of one another: each one generates its own
+   particle, solves the scattering problem for it and contributes to the
+   averages. They are therefore distributed over several workers, each with
+   its own occupancy map and its own set of solver arrays. The A-matrix and
+   the FFT tables stay shared and are only read. */
 
-        if(iChoiceStructure==3)
-            iNoD=iGenerateParallelepiped(i_max,j_max,l_max,b_a,c_a,cAlpha);
+    iFirstRealization=iRealizationCounter;
+    iTasks=iRealizationNumber-iFirstRealization;
+    iWorkers=worker_count(i_max,j_max,l_max);
 
-        if(iChoiceStructure==4)
-            iNoD=iGenerateRandomEllipsoid(i_max,j_max,l_max,1.,1.,iSorts,iSeeds,
-                                          cAlpha);
-        if(iChoiceStructure==5)
-            iNoD=iGenerateRandomEllipsoid(i_max,j_max,l_max,b_a,c_a,iSorts,
-                                          iSeeds,cAlpha);
+/* No point in allocating more workspaces than there is work to do. */
 
-        if(iChoiceStructure==6) // the anthrax-like particle
-            iNoD=iGenerateAnthrax(i_max,j_max,l_max,radius_worm,length_worm,
-                                  iWormsNumber,worms,cAlpha);
+    if(iWorkers>iTasks) iWorkers=iTasks;
+    if(iWorkers<1)      iWorkers=1;
 
-        if(iChoiceStructure==7) // the hedgehog-like particle
-            iNoD=iGenerateHedgehog(i_max,j_max,l_max,radius_worm,length_worm,
-                                   iWormsNumber,worms,cAlpha);
+    printf("\n Samples to process: %d",iTasks);
+    printf("\n Worker threads: %d",iWorkers);
+    fflush(stdout);
 
-        if(iChoiceStructure==8) // the dead anthrax-like particle
-            iNoD=iGenerateDeadAnthrax(i_max,j_max,l_max,radius_worm,length_worm,
+    psiFixed=psi;   iotaFixed=iota;   kappaFixed=kappa;
+
+    vWorkers=(dda_worker *)malloc(iWorkers*sizeof(dda_worker));
+    if(vWorkers==NULL)
+    {   printf("\n No enough memory for the worker descriptions! ");
+        exit(1);
+    }
+
+    for(T=0;T<iWorkers;T++)
+    {   dda_worker * w=&vWorkers[T];
+
+        w->cAlpha=alloc_char3(i_max,j_max,l_max);
+        for(i=0;i<i_max;i++)
+            for(j=0;j<j_max;j++)
+                for(l=0;l<l_max;l++)
+                    w->cAlpha[i][j][l]=cAlpha[i][j][l];
+
+        w->cListMaterials=(cplx *)malloc((iSorts+1)*sizeof(cplx));
+        w->vNormal=(vector *)malloc(iNoScPl*sizeof(vector));
+        w->ksc=(vector **)malloc(iNoScPl*sizeof(vector *));
+        w->mmAcc=(mmuller *)malloc(iNoA*sizeof(mmuller));
+        w->mm0=(mmuller *)malloc(iNoA*sizeof(mmuller));
+        if(w->cListMaterials==NULL||w->vNormal==NULL||w->ksc==NULL||
+           w->mmAcc==NULL||w->mm0==NULL)
+        {   printf("\n No enough memory for the worker state! ");
+            exit(1);
+        }
+
+        for(i=0;i<=iSorts;i++)  w->cListMaterials[i]=cListMaterials[i];
+        for(i=0;i<iNoA;i++)     w->mmAcc[i]=mmNull();
+
+        for(i=0;i<iNoScPl;i++)
+        {   w->ksc[i]=(vector *)malloc(iNoA*sizeof(vector));
+            if(w->ksc[i]==NULL)
+            {   printf("\n No enough memory for the scattering directions! ");
+                exit(1);
+            }
+            for(j=0;j<iNoA;j++) w->ksc[i][j]=ksc[i][j];
+            w->vNormal[i]=vNormal[i];
+        }
+
+        w->kinc=kinc;
+
+        for(i=0;i<2;i++)
+        {   w->Einc[i]=Einc[i];
+            w->Esc[i]=(cvector **)malloc(iNoScPl*sizeof(cvector *));
+            if(w->Esc[i]==NULL)
+            {   printf("\n No enough memory for the scattered field! ");
+                exit(1);
+            }
+            for(j=0;j<iNoScPl;j++)
+            {   w->Esc[i][j]=(cvector *)malloc(iNoA*sizeof(cvector));
+                if(w->Esc[i][j]==NULL)
+                {   printf("\n No enough memory for the scattered field! ");
+                    exit(1);
+                }
+            }
+        }
+
+        w->worms=NULL;
+        if(iChoiceStructure==6||iChoiceStructure==7||iChoiceStructure==8)
+        {   w->worms=(cylinder *)malloc(sizeof(cylinder)*iWormsNumber);
+            if(w->worms==NULL)
+            {   printf("\n No enough memory for the worm geometry! ");
+                exit(1);
+            }
+        }
+
+        dda_workspace_create(&w->ws,i_max,j_max,l_max,iMode_SolutionMethod);
+        w->ws.iVerbose=(iWorkers==1);
+    }
+
+    {   std::mutex outMutex;
+        std::atomic<int> iNextTask(0);
+
+        auto run_samples = [&](int iWorkerId)
+        {   dda_worker * w=&vWorkers[iWorkerId];
+
+/* The names below are the ones the sample loop used when it lived in main();
+   the mutable ones are now private to this worker. */
+
+            char *** cAlpha=w->cAlpha;
+            cplx * cListMaterials=w->cListMaterials;
+            vector * vNormal=w->vNormal;
+            vector ** ksc=w->ksc;
+            vector & kinc=w->kinc;
+            cvector (&Einc)[2]=w->Einc;
+            cvector ** (&Esc)[2]=w->Esc;
+            cylinder * worms=w->worms;
+            mmuller * mm0=w->mm0;
+
+            int i,j,l,m;
+            int iNoD=0,iSampleNumber;
+            int X_min=0,X_max=0,Y_min=0,Y_max=0,Z_min=0,Z_max=0;
+            real psiW=psiFixed,iotaW=iotaFixed,kappaW=kappaFixed;
+            real cos_psiW=0.,sin_psiW=0.,cos_iotaW=0.,sin_iotaW=0.;
+            real cos_kappaW=0.,sin_kappaW=0.;
+            real VectTrans[3][3],rCabs,rCext,rCabsSum,rCextSum;
+            cplx alphaW;
+            mjones mjScat;
+
+            dda_srand(random_base_seed()
+                      +0x9E3779B97F4A7C15ULL*(unsigned long long)(iWorkerId+1));
+
+            for(;;)
+            {   int iTask=iNextTask.fetch_add(1);
+                if(iTask>=iTasks)   break;
+
+                iSampleNumber=iFirstRealization+iTask+1;
+                rCabsSum=0.;    rCextSum=0.;
+
+       if(iChoiceStructure==1)
+                iNoD=iGenerateEllipsoid(i_max,j_max,l_max,1.,1.,cAlpha);
+
+            if(iChoiceStructure==2)
+                iNoD=iGenerateEllipsoid(i_max,j_max,l_max,b_a,c_a,cAlpha);
+
+            if(iChoiceStructure==3)
+                iNoD=iGenerateParallelepiped(i_max,j_max,l_max,b_a,c_a,cAlpha);
+
+            if(iChoiceStructure==4)
+                iNoD=iGenerateRandomEllipsoid(i_max,j_max,l_max,1.,1.,iSorts,iSeeds,
+                                              cAlpha);
+            if(iChoiceStructure==5)
+                iNoD=iGenerateRandomEllipsoid(i_max,j_max,l_max,b_a,c_a,iSorts,
+                                              iSeeds,cAlpha);
+
+            if(iChoiceStructure==6) // the anthrax-like particle
+                iNoD=iGenerateAnthrax(i_max,j_max,l_max,radius_worm,length_worm,
                                       iWormsNumber,worms,cAlpha);
 
-        if(iChoiceStructure==9)
-            iNoD=iGenerateRandomParallelepiped(i_max,j_max,l_max,b_a,c_a,
-                                               iSorts,iSeeds,cAlpha);
+            if(iChoiceStructure==7) // the hedgehog-like particle
+                iNoD=iGenerateHedgehog(i_max,j_max,l_max,radius_worm,length_worm,
+                                       iWormsNumber,worms,cAlpha);
 
-        if(iChoiceStructure==10)
-            iNoD=iGenerateNibbleEllipsoid(i_max,j_max,l_max,b_a,c_a,iSorts,
-                                          iSeeds,iBites,rDepth,iListMV,cAlpha);
+            if(iChoiceStructure==8) // the dead anthrax-like particle
+                iNoD=iGenerateDeadAnthrax(i_max,j_max,l_max,radius_worm,length_worm,
+                                          iWormsNumber,worms,cAlpha);
 
-        if(iChoiceStructure==12)
-            iNoD=iGenerateBisphere(i_max,j_max,l_max,R1_R2,cAlpha);
+            if(iChoiceStructure==9)
+                iNoD=iGenerateRandomParallelepiped(i_max,j_max,l_max,b_a,c_a,
+                                                   iSorts,iSeeds,cAlpha);
 
-        if(iChoiceStructure==13)
-            iNoD=iGenerateHierarchicalEllipsoid(iHierarchicalLevels,i_max,
-                                    j_max,l_max,b_a,c_a,iSorts,iSeeds,cAlpha);
+            if(iChoiceStructure==10)
+                iNoD=iGenerateNibbleEllipsoid(i_max,j_max,l_max,b_a,c_a,iSorts,
+                                              iSeeds,iBites,rDepth,iListMV,cAlpha);
 
-        if(iChoiceStructure==14)
-            iNoD=iGenerateSphereSpec(i_max,j_max,l_max,i_max/2.,rho,cAlpha);
+            if(iChoiceStructure==12)
+                iNoD=iGenerateBisphere(i_max,j_max,l_max,R1_R2,cAlpha);
 
-        iRealizationCounter++;
+            if(iChoiceStructure==13)
+                iNoD=iGenerateHierarchicalEllipsoid(iHierarchicalLevels,i_max,
+                                        j_max,l_max,b_a,c_a,iSorts,iSeeds,cAlpha);
 
-        printf("\n Sample #%d (%d dipoles)",iRealizationCounter,iNoD);
+            if(iChoiceStructure==14)
+                iNoD=iGenerateSphereSpec(i_max,j_max,l_max,i_max/2.,rho,cAlpha);
 
-        Particle_Boundary(iNoD,i_max,j_max,l_max,cAlpha,cListMaterials,
-                          &X_min,&Y_min,&Z_min,&X_max,&Y_max,&Z_max);
+            if(iWorkers==1)  printf("\n Sample #%d (%d dipoles)",iSampleNumber,iNoD);
 
-        printf("\n The sample occupies the initial matrix within boundaries:");
-        printf("\n axis X - from %3d to %3d",X_min,X_max);
-        printf("\n axis Y - from %3d to %3d",Y_min,Y_max);
-        printf("\n axis Z - from %3d to %3d",Z_min,Z_max);
+            Particle_Boundary(iNoD,i_max,j_max,l_max,cAlpha,cListMaterials,
+                              &X_min,&Y_min,&Z_min,&X_max,&Y_max,&Z_max);
 
-        if(iOrientationMode==0)
-        {   printf("\n Orientation of the sample (via rotations around the coordinate axes):");
-            printf("\n axis Z = %.2f    axis Y = %.2f    axis X = %.2f",psi*180./PI,iota*180./PI,kappa*180./PI);
-            fflush(stdout);
-        }
+            if(iWorkers==1)  printf("\n The sample occupies the initial matrix within boundaries:");
+            if(iWorkers==1)  printf("\n axis X - from %3d to %3d",X_min,X_max);
+            if(iWorkers==1)  printf("\n axis Y - from %3d to %3d",Y_min,Y_max);
+            if(iWorkers==1)  printf("\n axis Z - from %3d to %3d",Z_min,Z_max);
 
-        if(iOrientationMode==1)
-        {   cos_psi=(real)dda_rand()*2./(real)DDA_RAND_MAX-1.;
-            psi=acos(cos_psi);      sin_psi=sin(psi);       // c1 and s1
+            if(iOrientationMode==0)
+            {   if(iWorkers==1)  printf("\n Orientation of the sample (via rotations around the coordinate axes):");
+                if(iWorkers==1)  printf("\n axis Z = %.2f    axis Y = %.2f    axis X = %.2f",psiW*180./PI,iotaW*180./PI,kappaW*180./PI);
+                fflush(stdout);
+            }
 
-            iota=(real)dda_rand()*2.*PI/(real)DDA_RAND_MAX;
-            cos_iota=cos(iota);     sin_iota=sin(iota);     // c2 and s2
+            if(iOrientationMode==1)
+            {   cos_psiW=(real)dda_rand()*2./(real)DDA_RAND_MAX-1.;
+                psiW=acos(cos_psiW);      sin_psiW=sin(psiW);       // c1 and s1
 
-            kappa=(real)dda_rand()*2.*PI/(real)DDA_RAND_MAX;
-            cos_kappa=cos(kappa);   sin_kappa=sin(kappa);   // c3 and s3
+                iotaW=(real)dda_rand()*2.*PI/(real)DDA_RAND_MAX;
+                cos_iotaW=cos(iotaW);     sin_iotaW=sin(iotaW);     // c2 and s2
 
-            VectTrans[0][0]=cos_iota*cos_kappa-cos_psi*sin_iota*sin_kappa;
-            VectTrans[0][1]=sin_iota*cos_kappa+cos_psi*cos_iota*sin_kappa;
-            VectTrans[0][2]=sin_psi*sin_kappa;
+                kappaW=(real)dda_rand()*2.*PI/(real)DDA_RAND_MAX;
+                cos_kappaW=cos(kappaW);   sin_kappaW=sin(kappaW);   // c3 and s3
 
-            VectTrans[1][0]=-cos_iota*sin_kappa-cos_psi*sin_iota*cos_kappa;
-            VectTrans[1][1]=-sin_iota*sin_kappa+cos_psi*cos_iota*cos_kappa;
-            VectTrans[1][2]=sin_psi*cos_kappa;
+                VectTrans[0][0]=cos_iotaW*cos_kappaW-cos_psiW*sin_iotaW*sin_kappaW;
+                VectTrans[0][1]=sin_iotaW*cos_kappaW+cos_psiW*cos_iotaW*sin_kappaW;
+                VectTrans[0][2]=sin_psiW*sin_kappaW;
 
-            VectTrans[2][0]=sin_psi*sin_iota;
-            VectTrans[2][1]=-sin_psi*cos_iota;
-            VectTrans[2][2]=cos_psi;
+                VectTrans[1][0]=-cos_iotaW*sin_kappaW-cos_psiW*sin_iotaW*cos_kappaW;
+                VectTrans[1][1]=-sin_iotaW*sin_kappaW+cos_psiW*cos_iotaW*cos_kappaW;
+                VectTrans[1][2]=sin_psiW*cos_kappaW;
 
-            for(m=0;m<iNoScPl;m++)
-            {   for(i=0;i<iNoA;i++)
-                {   ksc[m][i].x=VectTrans[0][0]*ksc_ini[m][i].x+VectTrans[0][1]*ksc_ini[m][i].y+VectTrans[0][2]*ksc_ini[m][i].z;
-                    ksc[m][i].y=VectTrans[1][0]*ksc_ini[m][i].x+VectTrans[1][1]*ksc_ini[m][i].y+VectTrans[1][2]*ksc_ini[m][i].z;
-                    ksc[m][i].z=VectTrans[2][0]*ksc_ini[m][i].x+VectTrans[2][1]*ksc_ini[m][i].y+VectTrans[2][2]*ksc_ini[m][i].z;
+                VectTrans[2][0]=sin_psiW*sin_iotaW;
+                VectTrans[2][1]=-sin_psiW*cos_iotaW;
+                VectTrans[2][2]=cos_psiW;
+
+                for(m=0;m<iNoScPl;m++)
+                {   for(i=0;i<iNoA;i++)
+                    {   ksc[m][i].x=VectTrans[0][0]*ksc_ini[m][i].x+VectTrans[0][1]*ksc_ini[m][i].y+VectTrans[0][2]*ksc_ini[m][i].z;
+                        ksc[m][i].y=VectTrans[1][0]*ksc_ini[m][i].x+VectTrans[1][1]*ksc_ini[m][i].y+VectTrans[1][2]*ksc_ini[m][i].z;
+                        ksc[m][i].z=VectTrans[2][0]*ksc_ini[m][i].x+VectTrans[2][1]*ksc_ini[m][i].y+VectTrans[2][2]*ksc_ini[m][i].z;
+                    }
+
+                    vNormal[m].x=VectTrans[0][0]*vNormal_ini[m].x+VectTrans[0][1]*vNormal_ini[m].y+VectTrans[0][2]*vNormal_ini[m].z;
+                    vNormal[m].y=VectTrans[1][0]*vNormal_ini[m].x+VectTrans[1][1]*vNormal_ini[m].y+VectTrans[1][2]*vNormal_ini[m].z;
+                    vNormal[m].z=VectTrans[2][0]*vNormal_ini[m].x+VectTrans[2][1]*vNormal_ini[m].y+VectTrans[2][2]*vNormal_ini[m].z;
                 }
 
-                vNormal[m].x=VectTrans[0][0]*vNormal_ini[m].x+VectTrans[0][1]*vNormal_ini[m].y+VectTrans[0][2]*vNormal_ini[m].z;
-                vNormal[m].y=VectTrans[1][0]*vNormal_ini[m].x+VectTrans[1][1]*vNormal_ini[m].y+VectTrans[1][2]*vNormal_ini[m].z;
-                vNormal[m].z=VectTrans[2][0]*vNormal_ini[m].x+VectTrans[2][1]*vNormal_ini[m].y+VectTrans[2][2]*vNormal_ini[m].z;
-            }
+                kinc.x=VectTrans[0][0]*kinc_ini.x+VectTrans[0][1]*kinc_ini.y+VectTrans[0][2]*kinc_ini.z;
+                kinc.y=VectTrans[1][0]*kinc_ini.x+VectTrans[1][1]*kinc_ini.y+VectTrans[1][2]*kinc_ini.z;
+                kinc.z=VectTrans[2][0]*kinc_ini.x+VectTrans[2][1]*kinc_ini.y+VectTrans[2][2]*kinc_ini.z;
 
-            kinc.x=VectTrans[0][0]*kinc_ini.x+VectTrans[0][1]*kinc_ini.y+VectTrans[0][2]*kinc_ini.z;
-            kinc.y=VectTrans[1][0]*kinc_ini.x+VectTrans[1][1]*kinc_ini.y+VectTrans[1][2]*kinc_ini.z;
-            kinc.z=VectTrans[2][0]*kinc_ini.x+VectTrans[2][1]*kinc_ini.y+VectTrans[2][2]*kinc_ini.z;
-
-            for(m=0;m<2;m++)
-            {   Einc[m].x=VectTrans[0][0]*Einc_ini[m].x+VectTrans[0][1]*Einc_ini[m].y+VectTrans[0][2]*Einc_ini[m].z;
-                Einc[m].y=VectTrans[1][0]*Einc_ini[m].x+VectTrans[1][1]*Einc_ini[m].y+VectTrans[1][2]*Einc_ini[m].z;
-                Einc[m].z=VectTrans[2][0]*Einc_ini[m].x+VectTrans[2][1]*Einc_ini[m].y+VectTrans[2][2]*Einc_ini[m].z;
-            }
-
-            printf("\n Orientation of the sample (via Eiler's angles):");
-            printf("\n first = %.2f    second = %.2f    third = %.2f",psi*180./PI,iota*180./PI,kappa*180./PI);
-            fflush(stdout);
-        }
-
-                                        // Solve the scattering problem for two
-        for(m=0;m<2;m++)                // polarization of incident field
-        {   if(iChoicePolarizability==5)
-                for(i=0;i<iSorts;i++)
-                {   alpha=Polarizability_CM(kd,cRefrIndex[i]);
-                    alpha=Polarizability_LDR(kd,cRefrIndex[i],alpha,kinc,Einc[m]);
-                    cListMaterials[(i+1)]=alpha;
+                for(m=0;m<2;m++)
+                {   Einc[m].x=VectTrans[0][0]*Einc_ini[m].x+VectTrans[0][1]*Einc_ini[m].y+VectTrans[0][2]*Einc_ini[m].z;
+                    Einc[m].y=VectTrans[1][0]*Einc_ini[m].x+VectTrans[1][1]*Einc_ini[m].y+VectTrans[1][2]*Einc_ini[m].z;
+                    Einc[m].z=VectTrans[2][0]*Einc_ini[m].x+VectTrans[2][1]*Einc_ini[m].y+VectTrans[2][2]*Einc_ini[m].z;
                 }
 
-            DDA_FFT(m,iMode_SolutionMethod,rTau,i_max,j_max,l_max,cListMaterials,
-                    iListMV,cAlpha,Max_Step,Error_max,kd,kinc,Einc[m],
-                    cW_2_i,cW_2_j,cW_2_l,cW_i,cW_j,cW_l,Im_cW_i,Im_cW_j,
-                    Im_cW_l,cW2_i,cW2_j,cW2_l,iMode_FFT,cmA,iNoScPl,iNoA,ksc,
-                    Esc[m],&rCabs,&rCext,&ws);
-
-            Cabs+=.5*rCabs;    Cext+=.5*rCext;
-        }
-
-                                        // Transform to Muller matrix
-        for(m=0;m<iNoA;m++)
-        {   mm0[m]=mmNull();
-
-            for(i=0;i<iNoScPl;i++)
-            {   mjScat=BuildMatrixJones(kinc,ksc[i][m],vNormal[i],Einc[0],
-                                        Einc[1],Esc[0][i][m],Esc[1][i][m]);
-
-                mm0[m]=mm0[m]+JonesToMuller(mjScat);
+                if(iWorkers==1)  printf("\n Orientation of the sample (via Eiler's angles):");
+                if(iWorkers==1)  printf("\n first = %.2f    second = %.2f    third = %.2f",psiW*180./PI,iotaW*180./PI,kappaW*180./PI);
+                fflush(stdout);
             }
 
-            mm0[m]=mm0[m]/(real)iNoScPl;
+                                            // Solve the scattering problem for two
+            for(m=0;m<2;m++)                // polarization of incident field
+            {   if(iChoicePolarizability==5)
+                    for(i=0;i<iSorts;i++)
+                    {   alphaW=Polarizability_CM(kd,cRefrIndex[i]);
+                        alphaW=Polarizability_LDR(kd,cRefrIndex[i],alphaW,kinc,Einc[m]);
+                                    cListMaterials[(i+1)]=alphaW;
+                    }
+
+                DDA_FFT(m,iMode_SolutionMethod,rTau,i_max,j_max,l_max,cListMaterials,
+                        iListMV,cAlpha,Max_Step,Error_max,kd,kinc,Einc[m],
+                        cW_2_i,cW_2_j,cW_2_l,cW_i,cW_j,cW_l,Im_cW_i,Im_cW_j,
+                        Im_cW_l,cW2_i,cW2_j,cW2_l,iMode_FFT,cmA,iNoScPl,iNoA,ksc,
+                        Esc[m],&rCabs,&rCext,&w->ws);
+
+                rCabsSum+=.5*rCabs;    rCextSum+=.5*rCext;
+            }
+
+                                            // Transform to Muller matrix
+            for(m=0;m<iNoA;m++)
+            {   mm0[m]=mmNull();
+
+                for(i=0;i<iNoScPl;i++)
+                {   mjScat=BuildMatrixJones(kinc,ksc[i][m],vNormal[i],Einc[0],
+                                            Einc[1],Esc[0][i][m],Esc[1][i][m]);
+
+                    mm0[m]=mm0[m]+JonesToMuller(mjScat);
+                }
+
+                mm0[m]=mm0[m]/(real)iNoScPl;
+            }
+
+
+    
+
+/* Accumulate the result of this sample and refresh the state file. */
+
+                {   std::lock_guard<std::mutex> lock(outMutex);
+
+                    Cabs+=rCabsSum;     Cext+=rCextSum;
+                    for(m=0;m<iNoA;m++)
+                        mmAccumulator[m]=mmAccumulator[m]+mm0[m];
+                    iRealizationCounter++;
+
+                    if(iWorkers>1)
+                    {   printf("\n Sample #%d done: %d dipoles, %d plane(s), %d angle(s)",
+                               iSampleNumber,iNoD,iNoScPl,iNoA);
+                        fflush(stdout);
+                    }
+
+                    fseek(storage_data,0,SEEK_SET);
+                    l=fwrite(&iRealizationCounter,sizeof(iRealizationCounter),1,
+                             storage_data);
+                    l=fwrite(&Cabs,sizeof(Cabs),1,storage_data);
+                    l=fwrite(&Cext,sizeof(Cext),1,storage_data);
+                    for(i=0;i<iNoA;i++)
+                        l=fwrite(&mmAccumulator[i],sizeof(mmAccumulator[i]),1,
+                                 storage_data);
+
+                    fflush(storage_data);
+                }
+            }
+        };
+
+        {   std::vector<std::thread> vThreads;
+
+            vThreads.reserve(iWorkers);
+            for(T=0;T<iWorkers;T++)
+                vThreads.emplace_back(run_samples,T);
+            for(T=0;T<(int)vThreads.size();T++)
+                vThreads[T].join();
         }
-
-        for(m=0;m<iNoA;m++)
-            mmAccumulator[m]=mmAccumulator[m]+mm0[m];
-
-        fseek(storage_data,0,SEEK_SET);
-        l=fwrite(&iRealizationCounter,sizeof(iRealizationCounter),1,storage_data);
-        l=fwrite(&Cabs,sizeof(Cabs),1,storage_data);
-        l=fwrite(&Cext,sizeof(Cext),1,storage_data);
-        for(i=0;i<iNoA;i++)
-            l=fwrite(&mmAccumulator[i],sizeof(mmAccumulator[i]),1,storage_data);
-
-        fflush(storage_data);
     }
+
+    for(T=0;T<iWorkers;T++)
+    {   dda_worker * w=&vWorkers[T];
+
+        free_char3(w->cAlpha);
+        free(w->cListMaterials);
+        free(w->vNormal);
+        free(w->mmAcc);
+        free(w->mm0);
+        for(i=0;i<iNoScPl;i++)
+        {   free(w->ksc[i]);
+            free(w->Esc[0][i]);
+            free(w->Esc[1][i]);
+        }
+        free(w->ksc);   free(w->Esc[0]);    free(w->Esc[1]);
+        free(w->worms);
+        dda_workspace_free(&w->ws);
+    }
+    free(vWorkers);
+
     fclose(storage_data);
 
 /****************************************************************************/
@@ -1343,7 +1638,6 @@ int main(int argc, char ** argv)
 
     free(cAlpha);
 
-    dda_workspace_free(&ws);
     
 
     for(i=0;i<2*i_max;i++)
