@@ -1280,6 +1280,17 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
     printf("\n Step    0    discrepancy=%9.7Lf",Error);
     Error_min=Error;    step_min=0;
 
+/* The iterate of step 0 is the best one until some iteration improves on it,
+   so it has to be stored right away. Otherwise, if the iterative process never
+   improves (e.g. the simple iteration method with a too large weight factor
+   diverges), cvP_min would still be uninitialised when the code below falls
+   back to it. */
+
+    for(i=0;i<i_max;i++)
+        for(j=0;j<j_max;j++)
+            for(l=0;l<l_max;l++)
+                cvP_min[i][j][l]=cvP[i][j][l];
+
     time1=time(NULL);
     printf("\ttime=%ld sec.",(long)(time1-time0));
     fflush(stdout);
