@@ -42,6 +42,7 @@ int main(int argc, char ** argv)
 
     char *** cAlpha;
     cmatrix *** cmA;
+    dda_workspace ws;
     FILE * output_data,* storage_data;
 
     printf("\nComputation of light scattering by arbitrary target:");
@@ -985,6 +986,10 @@ int main(int argc, char ** argv)
             }
         }
 
+/* The scratch arrays of the solver are allocated once for the whole run. */
+
+    dda_workspace_create(&ws,i_max,j_max,l_max,iMode_SolutionMethod);
+
 
 /****************************************************************************/
 /******************************* Calculation ********************************/
@@ -1280,7 +1285,7 @@ int main(int argc, char ** argv)
                     iListMV,cAlpha,Max_Step,Error_max,kd,kinc,Einc[m],
                     cW_2_i,cW_2_j,cW_2_l,cW_i,cW_j,cW_l,Im_cW_i,Im_cW_j,
                     Im_cW_l,cW2_i,cW2_j,cW2_l,iMode_FFT,cmA,iNoScPl,iNoA,ksc,
-                    Esc[m],&rCabs,&rCext);
+                    Esc[m],&rCabs,&rCext,&ws);
 
             Cabs+=.5*rCabs;    Cext+=.5*rCext;
         }
@@ -1337,6 +1342,8 @@ int main(int argc, char ** argv)
         free(cAlpha[i]);
 
     free(cAlpha);
+
+    dda_workspace_free(&ws);
     
 
     for(i=0;i<2*i_max;i++)

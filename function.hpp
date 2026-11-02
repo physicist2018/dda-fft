@@ -90,6 +90,29 @@ void Convolution_conj(int i_max, int j_max, int l_max, real ** Im_cW_i,
 
 /*********************************** DDA ************************************/
 
+/* Scratch arrays used by the iterative solver. They are allocated once and
+   reused for every illumination and every realization, so the program does
+   not allocate and free hundreds of megabytes on each call. */
+
+typedef
+    struct
+    {   int i_max;
+        int j_max;
+        int l_max;
+        cvector *** cvP;        /* dipole moments, current iterate            */
+        cvector *** cvP_min;    /* iterate with the smallest discrepancy      */
+        cvector *** cvWork;     /* padded (2i x 2j x 2l) convolution buffer  */
+        cvector *** cvR;        /* residual                                    */
+        cvector *** cvS;        /* search direction                            */
+        cvector *** cvG;        /* BiCGStab only, NULL otherwise               */
+        cvector *** cvH;        /* BiCGStab only, NULL otherwise               */
+    }
+    dda_workspace;
+
+void dda_workspace_create(dda_workspace * ws, int i_max, int j_max, int l_max,
+                          int iMode_SolutionMethod);
+void dda_workspace_free(dda_workspace * ws);
+
 vector Rotation_x(real cos_angle, real sin_angle, vector coordinate_ini);
 vector Rotation_y(real cos_angle, real sin_angle, vector coordinate_ini);
 vector Rotation_z(real cos_angle, real sin_angle, vector coordinate_ini);
@@ -132,7 +155,7 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
             cplx * cW_j, cplx * cW_l, real ** Im_cW_i, real ** Im_cW_j,
             real ** Im_cW_l, cplx ** cW2_i, cplx ** cW2_j, cplx ** cW2_l,
             int iMode_FFT, cmatrix *** cmA, int iNoScPl, int iNoA, vector ** ksc,
-            cvector ** Esc, real * rCabs, real * rCext);
+            cvector ** Esc, real * rCabs, real * rCext, dda_workspace * ws);
 
 cvector FarField(int i_max, int j_max, int l_max, int * iListMV,
                  char *** cAlpha, real d0, cvector *** cvP, vector ksc_ort);

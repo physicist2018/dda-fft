@@ -974,6 +974,100 @@ void LinearComb(int i_max, int j_max, int l_max, real cCoefficient, int * iListM
 }
 
 /****************************************************************************/
+/***************************** Memory for fields *****************************/
+/****************************************************************************/
+
+/* Allocates a contiguous ni x nj x nl array of cvector. The rows are carved
+   out of a single block, so the number of heap allocations is 3 instead of
+   ni*nj+ni+1 and the whole field is one contiguous, cache-friendly region. */
+
+/* Rows are padded by FIELD_PAD elements. The lattice dimensions are powers of
+   two, so an unpadded layout puts every row at an exact power-of-two offset and
+   makes the three FFT sweeps hit the same cache sets over and over. A small pad
+   breaks that aliasing at the cost of a tiny amount of memory. */
+
+#ifndef FIELD_PAD
+#define FIELD_PAD 1
+#endif
+
+static cvector *** alloc_field3(int ni, int nj, int nl)
+{   size_t stride_l=(size_t)nl+FIELD_PAD;
+    size_t plane=(size_t)nj*stride_l+FIELD_PAD;
+    size_t ncell=(size_t)ni*plane;
+    cvector *** p;
+    cvector ** rows;
+    cvector * blk;
+    int i,j;
+
+    p=(cvector ***)malloc((size_t)ni*sizeof(cvector **));
+    rows=(cvector **)malloc((size_t)ni*(size_t)nj*sizeof(cvector *));
+    blk=(cvector *)malloc(ncell*sizeof(cvector));
+    if(p==NULL||rows==NULL||blk==NULL)
+    {   printf("\n No enough memory for a %dx%dx%d field (%lu bytes)! ",
+               ni,nj,nl,(unsigned long)(ncell*sizeof(cvector)));
+        exit(1);
+    }
+
+    for(i=0;i<ni;i++)
+    {   p[i]=rows+(size_t)i*nj;
+        for(j=0;j<nj;j++)
+            p[i][j]=blk+(size_t)i*plane+(size_t)j*stride_l;
+    }
+
+    return p;
+}
+
+static void free_field3(cvector *** p)
+{   if(p==NULL)  return;
+    free(p[0][0]);
+    free(p[0]);
+    free(p);
+}
+
+/****************************************************************************/
+/************************ Workspace for the solver ***************************/
+/****************************************************************************/
+
+void dda_workspace_create(dda_workspace * ws, int i_max, int j_max, int l_max,
+                          int iMode_SolutionMethod)
+{   ws->i_max=i_max;    ws->j_max=j_max;    ws->l_max=l_max;
+
+    ws->cvP=alloc_field3(i_max,j_max,l_max);
+    ws->cvP_min=alloc_field3(i_max,j_max,l_max);
+    ws->cvR=alloc_field3(i_max,j_max,l_max);
+    ws->cvS=alloc_field3(i_max,j_max,l_max);
+
+/* The convolution works on a lattice padded by a factor of two in each
+   direction, hence the doubled dimensions here. */
+
+    ws->cvWork=alloc_field3(2*i_max,2*j_max,2*l_max);
+
+    if(iMode_SolutionMethod==2)
+    {   ws->cvG=alloc_field3(i_max,j_max,l_max);
+        ws->cvH=alloc_field3(i_max,j_max,l_max);
+    }
+    else
+    {   ws->cvG=NULL;   ws->cvH=NULL;   }
+
+    return;
+}
+
+void dda_workspace_free(dda_workspace * ws)
+{   free_field3(ws->cvP);
+    free_field3(ws->cvP_min);
+    free_field3(ws->cvR);
+    free_field3(ws->cvS);
+    free_field3(ws->cvWork);
+    free_field3(ws->cvG);
+    free_field3(ws->cvH);
+
+    ws->cvP=NULL;   ws->cvP_min=NULL;   ws->cvWork=NULL;
+    ws->cvR=NULL;   ws->cvS=NULL;       ws->cvG=NULL;   ws->cvH=NULL;
+
+    return;
+}
+
+/****************************************************************************/
 /****************************** DDA Function ********************************/
 /****************************************************************************/
 
@@ -984,7 +1078,7 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
             cplx * cW_j, cplx * cW_l, real ** Im_cW_i, real ** Im_cW_j,
             real ** Im_cW_l, cplx ** cW2_i, cplx ** cW2_j, cplx ** cW2_l,
             int iMode_FFT, cmatrix *** cmA, int iNoScPl, int iNoA, vector ** ksc,
-            cvector ** Esc, real * rCabs, real * rCext)
+            cvector ** Esc, real * rCabs, real * rCext, dda_workspace * ws)
 {   int i,j,l,o,m,step_min;
     real rA,rB,rrCabs,rrCext;
     long double Error_min,Error,RR,RR_1,SS;
@@ -993,138 +1087,14 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
     cvector *** cvP,*** cvP_min,*** cvWork,*** cvR,*** cvS,*** cvG,*** cvH;
     clock_t time0,time1;
 
-    cvP=(cvector ***)malloc(i_max*sizeof(cvector **));
-    if(cvP==NULL)
-    {   printf("\n No enough memory for array cvP! ");
+    if(ws==NULL||ws->i_max!=i_max||ws->j_max!=j_max||ws->l_max!=l_max)
+    {   printf("\n The workspace does not match the lattice dimensions! ");
         exit(1);
     }
-    for(i=0;i<i_max;i++)
-    {   cvP[i]=(cvector **)malloc(j_max*sizeof(cvector *));
-        if(cvP[i]==NULL)
-        {   printf("\n No enough memory for array cvP[%d]! ",i);
-            exit(1);
-        }
-    }
-    for(i=0;i<i_max;i++)
-        for(j=0;j<j_max;j++)
-        {   cvP[i][j]=(cvector *)malloc(l_max*sizeof(cvector));
-            if(cvP[i][j]==NULL)
-            {   printf("\n No enough memory for array cvP[%d][%d]! ",i,j);
-                exit(1);
-            }
-        }
 
-    cvP_min=(cvector ***)malloc(i_max*sizeof(cvector **));
-    if(cvP_min==NULL)
-    {   printf("\n No enough memory for array cvP_min! ");
-        exit(1);
-    }
-    for(i=0;i<i_max;i++)
-    {   cvP_min[i]=(cvector **)malloc(j_max*sizeof(cvector *));
-        if(cvP_min[i]==NULL)
-        {   printf("\n No enough memory for array cvP_min[%d]! ",i);
-            exit(1);
-        }
-    }
-    for(i=0;i<i_max;i++)
-        for(j=0;j<j_max;j++)
-        {   cvP_min[i][j]=(cvector *)malloc(l_max*sizeof(cvector));
-            if(cvP_min[i][j]==NULL)
-            {   printf("\n No enough memory for array cvP_min[%d][%d]! ",i,j);
-                exit(1);
-            }
-        }
-
-    cvWork=(cvector ***)malloc(2*i_max*sizeof(cvector **));
-    if(cvWork==NULL)
-    {   printf("\n No enough memory for array cvWork! ");
-        exit(1);
-    }
-    for(i=0;i<2*i_max;i++)
-    {   cvWork[i]=(cvector **)malloc(2*j_max*sizeof(cvector *));
-        if(cvWork[i]==NULL)
-        {   printf("\n No enough memory for array cvWork[%d]! ",i);
-            exit(1);
-        }
-    }
-    for(i=0;i<2*i_max;i++)
-        for(j=0;j<2*j_max;j++)
-        {   cvWork[i][j]=(cvector *)malloc(2*l_max*sizeof(cvector));
-            if(cvWork[i][j]==NULL)
-            {   printf("\n No enough memory for array cvWork[%d][%d]! ",i,j);
-                exit(1);
-            }
-        }
-
-    cvR=(cvector ***)malloc(i_max*sizeof(cvector **));
-    if(cvR==NULL)
-    {   printf("\n No enough memory for array cvR! ");
-        exit(1);
-    }
-    for(i=0;i<i_max;i++)
-    {   cvR[i]=(cvector **)malloc(j_max*sizeof(cvector *));
-        if(cvR[i]==NULL)
-        {   printf("\n No enough memory for array cvR[%d]! ",i);
-            exit(1);
-        }
-    }
-    for(i=0;i<i_max;i++)
-        for(j=0;j<j_max;j++)
-        {   cvR[i][j]=(cvector *)malloc(l_max*sizeof(cvector));
-            if(cvR[i][j]==NULL)
-            {   printf("\n No enough memory for array cvR[%d][%d]! ",i,j);
-                exit(1);
-            }
-        }
-
-
-    cvS=(cvector ***)malloc(i_max*sizeof(cvector **));
-    if(cvS==NULL)
-    {   printf("\n No enough memory for array cvS! ");
-        exit(1);
-    }
-    for(i=0;i<i_max;i++)
-    {   cvS[i]=(cvector **)malloc(j_max*sizeof(cvector *));
-        if(cvS[i]==NULL)
-        {   printf("\n No enough memory for array cvS[%d]! ",i);
-            exit(1);
-        }
-    }
-    for(i=0;i<i_max;i++)
-        for(j=0;j<j_max;j++)
-        {   cvS[i][j]=(cvector *)malloc(l_max*sizeof(cvector));
-            if(cvS[i][j]==NULL)
-            {   printf("\n No enough memory for array cvS[%d][%d]! ",i,j);
-                exit(1);
-            }
-        }
-
-
-    if(iMode_SolutionMethod==2)
-    {   cvG=(cvector ***)malloc(i_max*sizeof(cvector **));
-        cvH=(cvector ***)malloc(i_max*sizeof(cvector **));
-        if(cvG==NULL||cvH==NULL)
-        {   printf("\n No enough memory for one of arrays: cvG or cvH!");
-            exit(1);
-        }
-        for(i=0;i<i_max;i++)
-        {   cvG[i]=(cvector **)malloc(j_max*sizeof(cvector *));
-            cvH[i]=(cvector **)malloc(j_max*sizeof(cvector *));
-            if(cvG[i]==NULL||cvH[i]==NULL)
-            {   printf("\n No enough memory for one of arrays: cvG[%d] or cvH[%d]!",i,i);
-                exit(1);
-            }
-        }
-        for(i=0;i<i_max;i++)
-            for(j=0;j<j_max;j++)
-            {   cvG[i][j]=(cvector *)malloc(l_max*sizeof(cvector));
-                cvH[i][j]=(cvector *)malloc(l_max*sizeof(cvector));
-                if(cvG[i][j]==NULL||cvH[i][j]==NULL)
-                {   printf("\n No enough memory for one of arrays: cvG[%d][%d] or cvH[%d][%d]! ",i,j,i,j);
-                    exit(1);
-                }
-            }
-    }
+    cvP=ws->cvP;        cvP_min=ws->cvP_min;    cvWork=ws->cvWork;
+    cvR=ws->cvR;        cvS=ws->cvS;
+    cvG=ws->cvG;        cvH=ws->cvH;
 
     time0=time(NULL);
 
@@ -1573,41 +1543,6 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
     printf("%ld sec.",(long)(time1-time0));
     fflush(stdout);
 
-
-    for(i=0;i<2*i_max;i++)
-        for(j=0;j<2*j_max;j++)
-            free(cvWork[i][j]);
-
-    for(i=0;i<2*i_max;i++)
-        free(cvWork[i]);
-
-    free(cvWork);
-
-    for(i=0;i<i_max;i++)
-        for(j=0;j<j_max;j++)
-        {   free(cvP[i][j]);    free(cvP_min[i][j]);
-            free(cvR[i][j]);    free(cvS[i][j]);
-        }
-
-    for(i=0;i<i_max;i++)
-    {   free(cvP[i]);   free(cvP_min[i]);
-        free(cvR[i]);   free(cvS[i]);
-    }
-
-    free(cvP);  free(cvP_min);  free(cvR);  free(cvS);
-
-    if(iMode_SolutionMethod==2)
-    {   for(i=0;i<i_max;i++)
-            for(j=0;j<j_max;j++)
-            {   free(cvG[i][j]);    free(cvH[i][j]);
-            }
-
-        for(i=0;i<i_max;i++)
-        {   free(cvG[i]);   free(cvH[i]);
-        }
-
-        free(cvG);  free(cvH);
-    }
 
     return 0;
 }
