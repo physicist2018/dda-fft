@@ -10,6 +10,7 @@
 #include "cplx.h"
 #include "cvector.hpp"
 #include "mmuller.hpp"
+#include "randomize.hpp"
 
 typedef
     struct

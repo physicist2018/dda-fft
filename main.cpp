@@ -1224,13 +1224,13 @@ int main(int argc, char ** argv)
         }
 
         if(iOrientationMode==1)
-        {   cos_psi=(real)rand()*2./(real)RAND_MAX-1.;
+        {   cos_psi=(real)dda_rand()*2./(real)DDA_RAND_MAX-1.;
             psi=acos(cos_psi);      sin_psi=sin(psi);       // c1 and s1
 
-            iota=(real)rand()*2.*PI/(real)RAND_MAX;
+            iota=(real)dda_rand()*2.*PI/(real)DDA_RAND_MAX;
             cos_iota=cos(iota);     sin_iota=sin(iota);     // c2 and s2
 
-            kappa=(real)rand()*2.*PI/(real)RAND_MAX;
+            kappa=(real)dda_rand()*2.*PI/(real)DDA_RAND_MAX;
             cos_kappa=cos(kappa);   sin_kappa=sin(kappa);   // c3 and s3
 
             VectTrans[0][0]=cos_iota*cos_kappa-cos_psi*sin_iota*sin_kappa;

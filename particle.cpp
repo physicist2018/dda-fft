@@ -36,15 +36,15 @@ int iGenerateAnthrax(int i_max, int j_max, int l_max, real radius_worm,
 	while(m<iWormsNumber)
 	{   cl0.r=-1.;
 		while(cl0.r<0.)
-		{   r1=R*(real)rand()/(real)RAND_MAX;
+		{   r1=R*(real)dda_rand()/(real)DDA_RAND_MAX;
 			r2=r1;
 
-			phi1=2.*PI*(real)rand()/(real)RAND_MAX;
-			phi2=2.*PI*(real)rand()/(real)RAND_MAX;
+			phi1=2.*PI*(real)dda_rand()/(real)DDA_RAND_MAX;
+			phi2=2.*PI*(real)dda_rand()/(real)DDA_RAND_MAX;
 
-			r0=(2.*(real)rand()/(real)RAND_MAX-1.);
+			r0=(2.*(real)dda_rand()/(real)DDA_RAND_MAX-1.);
 			theta1=acos(r0);
-			r0=(2.*(real)rand()/(real)RAND_MAX-1.);
+			r0=(2.*(real)dda_rand()/(real)DDA_RAND_MAX-1.);
 			theta2=acos(r0);
 
 			cl0=worm(r1,theta1,phi1,r2,theta2,phi2,length_worm,radius_worm,R2);
@@ -104,15 +104,15 @@ int iGenerateHedgehog(int i_max, int j_max, int l_max, real radius_worm,
 	while(m<iWormsNumber)
 	{   cl0.r=-1.;
 		while(cl0.r<0.)
-		{   r1=R*(real)rand()/(real)RAND_MAX;
+		{   r1=R*(real)dda_rand()/(real)DDA_RAND_MAX;
 
-			if((2.*(real)rand()/(real)RAND_MAX-1.)<=0.)
+			if((2.*(real)dda_rand()/(real)DDA_RAND_MAX-1.)<=0.)
 				r2=r1-0.1;
 			else
 				r2=r1+0.1;
 
-			phi1=2.*PI*(real)rand()/(real)RAND_MAX;
-			theta1=acos(2.*(real)rand()/(real)RAND_MAX-1.);
+			phi1=2.*PI*(real)dda_rand()/(real)DDA_RAND_MAX;
+			theta1=acos(2.*(real)dda_rand()/(real)DDA_RAND_MAX-1.);
 
 			phi2=phi1;
 			theta2=theta1;
@@ -174,9 +174,9 @@ int iGenerateDeadAnthrax(int i_max, int j_max, int l_max, real radius_worm,
 	while(m<iWormsNumber)
 	{   cl0.r=-1.;
 		while(cl0.r<0.)
-		{   r1=R*(real)rand()/(real)RAND_MAX;
-			phi1=2.*PI*(real)rand()/(real)RAND_MAX;
-			r0=(2.*(real)rand()/(real)RAND_MAX-1.);
+		{   r1=R*(real)dda_rand()/(real)DDA_RAND_MAX;
+			phi1=2.*PI*(real)dda_rand()/(real)DDA_RAND_MAX;
+			r0=(2.*(real)dda_rand()/(real)DDA_RAND_MAX-1.);
 			theta1=acos(r0);
 			r2=sin(theta1);
 
@@ -559,9 +559,9 @@ int iGenerateRandomEllipsoid(int i_max, int j_max, int l_max, real b_a, real c_a
 	for(m=0;m<iNoSeeds;m++)
 	{   do
 		{   iFlag=0;
-			v0.x=rounding(((real)rand()/(real)RAND_MAX)*((real)i_max-1.));
-			v0.y=rounding(((real)rand()/(real)RAND_MAX)*((real)j_max-1.));
-			v0.z=rounding(((real)rand()/(real)RAND_MAX)*((real)l_max-1.));
+			v0.x=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)i_max-1.));
+			v0.y=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)j_max-1.));
+			v0.z=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)l_max-1.));
 
 			for(i=0;i<m;i++)
 				if(abs(vSeeds[i]-v0)<ZERO)
@@ -643,9 +643,9 @@ int iGenerateRandomParallelepiped(int i_max, int j_max, int l_max, real b_a,
 	for(m=0;m<iNoSeeds;m++)
 	{   do
 		{   iFlag=0;
-			v0.x=rounding(((real)rand()/(real)RAND_MAX)*((real)i_max-1.));
-			v0.y=rounding(((real)rand()/(real)RAND_MAX)*((real)j_max-1.));
-			v0.z=rounding(((real)rand()/(real)RAND_MAX)*((real)l_max-1.));
+			v0.x=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)i_max-1.));
+			v0.y=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)j_max-1.));
+			v0.z=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)l_max-1.));
 
 			for(i=0;i<m;i++)
 				if(abs(vSeeds[i]-v0)<ZERO)
@@ -731,9 +731,9 @@ int iGenerateNibbleEllipsoid(int i_max, int j_max, int l_max, real b_a, real c_a
 	for(m=0;m<iNoSeeds;m++)
 	{   do
 		{   iFlag=0;
-			v0.x=rounding(((real)rand()/(real)RAND_MAX)*((real)i_max-1.));
-			v0.y=rounding(((real)rand()/(real)RAND_MAX)*((real)j_max-1.));
-			v0.z=rounding(((real)rand()/(real)RAND_MAX)*((real)l_max-1.));
+			v0.x=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)i_max-1.));
+			v0.y=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)j_max-1.));
+			v0.z=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)l_max-1.));
 
 			for(i=0;i<m;i++)
 				if(abs(vSeeds[i]-v0)<ZERO)
@@ -750,9 +750,9 @@ int iGenerateNibbleEllipsoid(int i_max, int j_max, int l_max, real b_a, real c_a
 	for(m=iNoSeeds;m<(iNoSeeds+iBites);m++)
 	{   do
 		{   iFlag=0;
-			v0.x=rounding(((real)rand()/(real)RAND_MAX)*((real)i_max-1.));
-			v0.y=rounding(((real)rand()/(real)RAND_MAX)*((real)j_max-1.));
-			v0.z=rounding(((real)rand()/(real)RAND_MAX)*((real)l_max-1.));
+			v0.x=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)i_max-1.));
+			v0.y=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)j_max-1.));
+			v0.z=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)l_max-1.));
 
 			v1=v0-vCenter; v1x2=v1.x*v1.x; v1y2=v1.y*v1.y; v1z2=v1.z*v1.z;
 
@@ -853,9 +853,9 @@ int iGenerateHierarchicalEllipsoid(int iHierarchicalLevels, int i_max, int j_max
 	for(m=0;m<iNoSeeds;m++)
 	{   do
 		{   iFlag=0;
-			v0.x=rounding(((real)rand()/(real)RAND_MAX)*((real)i_max-1.));
-			v0.y=rounding(((real)rand()/(real)RAND_MAX)*((real)j_max-1.));
-			v0.z=rounding(((real)rand()/(real)RAND_MAX)*((real)l_max-1.));
+			v0.x=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)i_max-1.));
+			v0.y=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)j_max-1.));
+			v0.z=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)l_max-1.));
 
 			for(i=0;i<m;i++)
 				if(abs(vSeeds[i]-v0)<ZERO)
@@ -909,9 +909,9 @@ int iGenerateHierarchicalEllipsoid(int iHierarchicalLevels, int i_max, int j_max
 		{   do
 			{   iFlag=0;
 				do
-				{   v0.x=rounding(((real)rand()/(real)RAND_MAX)*((real)i_max-1.));
-					v0.y=rounding(((real)rand()/(real)RAND_MAX)*((real)j_max-1.));
-					v0.z=rounding(((real)rand()/(real)RAND_MAX)*((real)l_max-1.));
+				{   v0.x=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)i_max-1.));
+					v0.y=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)j_max-1.));
+					v0.z=rounding(((real)dda_rand()/(real)DDA_RAND_MAX)*((real)l_max-1.));
 					i0=cAlpha[(int)v0.x][(int)v0.y][(int)v0.z];
 				}
 				while(i0!=1);

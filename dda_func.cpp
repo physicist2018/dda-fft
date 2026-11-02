@@ -69,8 +69,8 @@ vector vrand(void)
 {   real alpha,beta,cos_beta,sin_beta;
     vector vTmp;
 
-    alpha=(real)rand()*2*PI/RAND_MAX;
-    cos_beta=2.*(real)rand()/(real)RAND_MAX-1.;
+    alpha=(real)dda_rand()*2*PI/DDA_RAND_MAX;
+    cos_beta=2.*(real)dda_rand()/(real)DDA_RAND_MAX-1.;
     beta=acos(cos_beta);
     sin_beta=sin(beta);
 
