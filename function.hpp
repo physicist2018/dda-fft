@@ -100,6 +100,7 @@ typedef
     {   int i_max;
         int j_max;
         int l_max;
+        int iVerbose;           /* 1: print the per-step diagnostics        */
         cvector *** cvP;        /* dipole moments, current iterate            */
         cvector *** cvP_min;    /* iterate with the smallest discrepancy      */
         cvector *** cvWork;     /* padded (2i x 2j x 2l) convolution buffer  */

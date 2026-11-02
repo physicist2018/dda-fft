@@ -1031,6 +1031,7 @@ static void free_field3(cvector *** p)
 void dda_workspace_create(dda_workspace * ws, int i_max, int j_max, int l_max,
                           int iMode_SolutionMethod)
 {   ws->i_max=i_max;    ws->j_max=j_max;    ws->l_max=l_max;
+    ws->iVerbose=1;
 
     ws->cvP=alloc_field3(i_max,j_max,l_max);
     ws->cvP_min=alloc_field3(i_max,j_max,l_max);
@@ -1277,7 +1278,7 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
     }
 
     Error=ldError(i_max,j_max,l_max,iListMV,cAlpha,cvR);
-    printf("\n Step    0    discrepancy=%9.7Lf",Error);
+    if(ws->iVerbose)  printf("\n Step    0    discrepancy=%9.7Lf",Error);
     Error_min=Error;    step_min=0;
 
 /* The iterate of step 0 is the best one until some iteration improves on it,
@@ -1292,8 +1293,10 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
                 cvP_min[i][j][l]=cvP[i][j][l];
 
     time1=time(NULL);
-    printf("\ttime=%ld sec.",(long)(time1-time0));
-    fflush(stdout);
+    if(ws->iVerbose)
+    {   printf("\ttime=%ld sec.",(long)(time1-time0));
+        fflush(stdout);
+    }
 
     for(o=1;o<=Max_Step;o++)
     {   if(Error<=Error_max)    break;
@@ -1518,13 +1521,17 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
         }
 
         Error=ldError(i_max,j_max,l_max,iListMV,cAlpha,cvR);
-        printf("\n Step %4d    discrepancy=%9.7Lf",o,Error);
-        time1=time(NULL);
-        printf("\ttime=%ld sec.",(long)(time1-time0));
-        if(div(o,10).rem==0)
-            printf("  irradiation #%i",(iNoIllumination+1));
+        if(ws->iVerbose)
+        {   printf("\n Step %4d    discrepancy=%9.7Lf",o,Error);
+            time1=time(NULL);
+            printf("\ttime=%ld sec.",(long)(time1-time0));
+            if(div(o,10).rem==0)
+                printf("  irradiation #%i",(iNoIllumination+1));
 
-        fflush(stdout);
+            fflush(stdout);
+        }
+        else
+            time1=time(NULL);
     }
 
     if(Error>Error_min)
@@ -1533,9 +1540,11 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
                 for(l=0;l<l_max;l++)
                     cvP[i][j][l]=cvP_min[i][j][l];
 
-        printf("\n Result of the last iteration has been replaced with the most optimal!");
-        printf("\n Step %3d    discrepancy=%9.7Lf",step_min,Error_min);
-        fflush(stdout);
+        if(ws->iVerbose)
+        {   printf("\n Result of the last iteration has been replaced with the most optimal!");
+            printf("\n Step %3d    discrepancy=%9.7Lf",step_min,Error_min);
+            fflush(stdout);
+        }
     }
 
     time0=time(NULL);
@@ -1550,9 +1559,11 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
             Esc[i][j]=FarField(i_max,j_max,l_max,iListMV,cAlpha,d0,cvP,ksc[i][j]);
 
     time1=time(NULL);
-    printf("\n Calculations in %d scattering planes have been done for ",iNoScPl);
-    printf("%ld sec.",(long)(time1-time0));
-    fflush(stdout);
+    if(ws->iVerbose)
+    {   printf("\n Calculations in %d scattering planes have been done for ",iNoScPl);
+        printf("%ld sec.",(long)(time1-time0));
+        fflush(stdout);
+    }
 
 
     return 0;
