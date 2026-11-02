@@ -6,42 +6,16 @@
 /****************************************************************************/
 
 void Change_binary_number( int number_old, int number_of_bits, int * number_new )
-{   int i,i0;
-	short int * bits;
-	double d0,d1;
+{   int i,r=0;
 
-	bits=(short int *)malloc(number_of_bits*sizeof(short int));
-	if(bits==NULL)  printf("No enough memory for array bits");
+/* Bit reversal by bit shifting: no heap allocation and no pow() per call.
+   This routine is executed once per FFT point, i.e. millions of times per
+   three-dimensional transform. */
 
-/********************* Representation in binary sort ************************/
-
-	d0=number_old;
 	for(i=0;i<number_of_bits;i++)
-	{
-		d1=d0/2;    d0=(int)d1;
+		r=(r<<1)|((number_old>>i)&1);
 
-		if(d1-d0!=0)
-			bits[i]=1;
-		else
-			bits[i]=0;
-	}
-
-/******************** Invesion of number in binary sort *********************/
-
-	for(i=0;i<(int)(number_of_bits/2);i++)
-	{
-		i0=bits[i];
-		bits[i]=bits[(number_of_bits-1)-i];
-		bits[(number_of_bits-1)-i]=i0;
-	}
-
-/************ Definition of the decimal form of record of outcome ***********/
-
-	* number_new=0;
-	for(i=0;i<number_of_bits;i++)
-		(* number_new)+=(int)pow(2.,(double)i)*bits[i];
-
-	free(bits);
+	(* number_new)=r;
 	return;
 }
 
