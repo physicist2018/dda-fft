@@ -1,5 +1,4 @@
 echo compiling DDA source code
-rm dda_fft.out
-g++ -O3 *.cpp
-mv -f a.out dda_fft.out
+rm -f dda_fft.out
+g++ -O3 -std=c++17 *.cpp -o dda_fft.out
 echo exec file is dda_fft.out

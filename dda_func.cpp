@@ -656,7 +656,7 @@ void FirstApproximation(int i_max, int j_max, int l_max, int * iListMV,
                         vector kinc, cvector Einc, cvector *** cvB)
 {   int i,j,l,m;
     cplx c0,c1;
-    vector r,vCenter={(real)(i_max-1)*d0/2.,(real)(j_max-1)*d0/2.,(real)(l_max-1)*d0/2.};
+    vector r,vCenter={(real)((i_max-1)*d0/2.),(real)((j_max-1)*d0/2.),(real)((l_max-1)*d0/2.)};
 
     for(i=0;i<i_max;i++)
     {   r.x=(real)i*d0;
@@ -1311,7 +1311,7 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
     Error_min=Error;    step_min=0;
 
     time1=time(NULL);
-    printf("\ttime=%d sec.",(time1-time0));
+    printf("\ttime=%ld sec.",(long)(time1-time0));
     fflush(stdout);
 
     for(o=1;o<=Max_Step;o++)
@@ -1539,7 +1539,7 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
         Error=ldError(i_max,j_max,l_max,iListMV,cAlpha,cvR);
         printf("\n Step %4d    discrepancy=%9.7Lf",o,Error);
         time1=time(NULL);
-        printf("\ttime=%d sec.",(time1-time0));
+        printf("\ttime=%ld sec.",(long)(time1-time0));
         if(div(o,10).rem==0)
             printf("  irradiation #%i",(iNoIllumination+1));
 
@@ -1570,7 +1570,7 @@ int DDA_FFT(int iNoIllumination, int iMode_SolutionMethod, real rTau, int i_max,
 
     time1=time(NULL);
     printf("\n Calculations in %d scattering planes have been done for ",iNoScPl);
-    printf("%d sec.",(time1-time0));
+    printf("%ld sec.",(long)(time1-time0));
     fflush(stdout);
 
 
@@ -1621,7 +1621,7 @@ cvector FarField(int i_max, int j_max, int l_max, int * iListMV,
 {   int i,j,l,m;
     real r0;
     cplx c0,c1,c2,c3,c4,c5,c6,c7;
-    vector r,vCenter={(real)(i_max-1)*d0/2.,(real)(j_max-1)*d0/2.,(real)(l_max-1)*d0/2.};
+    vector r,vCenter={(real)((i_max-1)*d0/2.),(real)((j_max-1)*d0/2.),(real)((l_max-1)*d0/2.)};
     cvector cvTmp={{0.,0.},{0.,0.},{0.,0.}};
 
     for(i=0;i<i_max;i++)
@@ -1725,7 +1725,7 @@ void CabsCext(real d0, vector kinc_ort, cvector Einc, int i_max, int j_max,
 {   int i,j,l,m;
     cplx c0,c1,c2,c3,c4,c5;
     real r0=((4.*PI)/re(Einc*conj(Einc))),r1=0.,r2=0.,r3,r4=2./3.;
-    vector r,vCenter={(real)i_max*d0/2.,(real)j_max*d0/2.,(real)l_max*d0/2.};
+    vector r,vCenter={(real)(i_max*d0/2.),(real)(j_max*d0/2.),(real)(l_max*d0/2.)};
     cvector cv0=conj(Einc);
 
     for(i=0;i<i_max;i++)

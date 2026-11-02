@@ -1416,6 +1416,6 @@ int main(int argc, char ** argv)
     free(filename1);    free(filename2);    free(mmAccumulator);    free(mm0);
 
     time_end=time(NULL);
-    printf("\n\nElapsed time = %d sec.",(time_end-time_begin));
+    printf("\n\nElapsed time = %ld sec.",(long)(time_end-time_begin));
     return 0;
 }

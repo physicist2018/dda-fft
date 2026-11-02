@@ -24,7 +24,7 @@ int iGenerateAnthrax(int i_max, int j_max, int l_max, real radius_worm,
 {   int i,j,l,m,iTmp=0;
 	real R=(real)i_max/2.,R2=(R-radius_worm)*(R-radius_worm);
 	real r0,r1,r2,theta1,theta2,phi1,phi2;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0,v1;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0,v1;
 	cylinder cl0;
 
 	for(i=0;i<i_max;i++)
@@ -92,7 +92,7 @@ int iGenerateHedgehog(int i_max, int j_max, int l_max, real radius_worm,
 {   int i,j,l,m,iTmp=0;
 	real R=(real)i_max/2.,R2=(R-radius_worm)*(R-radius_worm);
 	real r1,r2,theta1,theta2,phi1,phi2;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0,v1;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0,v1;
 	cylinder cl0;
 
 	for(i=0;i<i_max;i++)
@@ -162,7 +162,7 @@ int iGenerateDeadAnthrax(int i_max, int j_max, int l_max, real radius_worm,
 {   int i,j,l,m,iTmp=0;
 	real R=(real)i_max/2.,R2=(R-radius_worm)*(R-radius_worm);
 	real r0,r1,r2,theta1,phi1;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0,v1;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0,v1;
 	cylinder cl0;
 
 	for(i=0;i<i_max;i++)
@@ -408,7 +408,7 @@ int PointToWorm(cylinder clWorm, vector vPoint, real radius)
 int iGenerateEllipsoid(int i_max, int j_max, int l_max, real b_a, real c_a,
 					   char *** cAlpha)
 {   int i,j,l;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0,v1;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0,v1;
 	real a,b,c;                         // axes of the ellipsoid
 	int iTmp=0;
 
@@ -532,7 +532,7 @@ int iGenerateRandomEllipsoid(int i_max, int j_max, int l_max, real b_a, real c_a
 							 int iSorts, int * iSeeds, char *** cAlpha)
 {   int i,j,l,m,iFlag,iiNoSeeds,iNoSeeds=0,iTmp=0;
 	real a,b,c,dist,dist_min;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0,v1;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0,v1;
 	vector * vSeeds;
 
 	a=(real)i_max;  b=a*b_a;  c=a*c_a;  // define axes of the ellipsoid
@@ -618,7 +618,7 @@ int iGenerateRandomParallelepiped(int i_max, int j_max, int l_max, real b_a,
 								  char *** cAlpha)
 {   int i,j,l,m,iFlag,iiNoSeeds,iNoSeeds=0,iTmp=0;
 	real a,b,c,dist,dist_min;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0;
 	vector * vSeeds;
 
 	a=(real)i_max;  b=a*b_a;  c=a*c_a;  // define axes of the parallelepiped
@@ -698,7 +698,7 @@ int iGenerateNibbleEllipsoid(int i_max, int j_max, int l_max, real b_a, real c_a
 							 int * iListMV, char *** cAlpha)
 {   int i,j,l,m,iFlag,iiNoSeeds,iNoSeeds=0,iTmp=0;
 	real a,b,c,a1,b1,c1,dist,dist_min,v1x2,v1y2,v1z2;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0,v1;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0,v1;
 	vector * vSeeds;
 
 	a=(real)i_max;  b=a*b_a;  c=a*c_a;  // define axes of the ellipsoid
@@ -826,7 +826,7 @@ int iGenerateHierarchicalEllipsoid(int iHierarchicalLevels, int i_max, int j_max
 								   char *** cAlpha)
 {   int i,j,l,m,iFlag,iiNoSeeds,iNoSeeds=0,iTmp=0,iLevelsCounter=1,i0;
 	real a,b,c,dist,dist_min;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0,v1;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0,v1;
 	vector * vSeeds;
 
 	a=(real)i_max;  b=a*b_a;  c=a*c_a;  // define axes of the ellipsoid
@@ -965,7 +965,7 @@ int iGenerateHierarchicalEllipsoid(int iHierarchicalLevels, int i_max, int j_max
 int iGenerateSphereSpec(int i_max, int j_max, int l_max, real Radius, real rho,
 					   char *** cAlpha)
 {   int i,j,l;
-	vector vCenter={((real)i_max/2.-.5),((real)j_max/2.-.5),((real)l_max/2.-.5)},v0,v1;
+	vector vCenter={(real)((real)i_max/2.-.5),(real)((real)j_max/2.-.5),(real)((real)l_max/2.-.5)},v0,v1;
 	real radius,radius2;
 	int iTmp=0;
 
