@@ -1,5 +1,41 @@
 
 #include "function.hpp"
+#include "fft_kernel.hpp"
+
+/****************************************************************************/
+/************************ 1-D kernel selection *******************************/
+/****************************************************************************/
+
+/* FFT_3D/iFFT_3D below drive many 1-D transforms over lines of a fixed size.
+   When the size is a power of two the mixed-radix in-place kernel from
+   fft_kernel.hpp is used; otherwise (or when built with -DFFT_KERNEL_LEGACY)
+   the original radix-2 kernel runs unchanged.  Both produce the same
+   transform -- a natural-order DFT_N -- so the zero-padding "half"
+   convention implemented by the callers does not change. */
+
+static inline const ddafft::plan * fft_plan_for(int N)
+{
+#ifdef FFT_KERNEL_LEGACY
+	(void)N;
+	return NULL;
+#else
+	return ddafft::get_plan(N);
+#endif
+}
+
+static inline void fft_line_fwd(const ddafft::plan * pl,int lim_NoB,int N,
+							cplx * cW,cvector * cvIn,cvector * cvOut)
+{
+	if(pl!=NULL) ddafft::fft_line(pl,cvOut,cvIn);
+	else         FFT(lim_NoB,N,cW,cvIn,cvOut);
+}
+
+static inline void fft_line_inv(const ddafft::plan * pl,int lim_NoB,int N,
+							cplx * cW,cvector * cvIn,cvector * cvOut)
+{
+	if(pl!=NULL) ddafft::ifft_line(pl,cvOut,cvIn);
+	else         iFFT(lim_NoB,N,cW,cvIn,cvOut);
+}
 
 /****************************************************************************/
 /************** Binary inversion of given number (used in FFT) **************/
@@ -383,19 +419,14 @@ void FFT_3D(int i_max, int j_max, int l_max, cplx * cW_2_i, cplx * cW_2_j,
 			cplx * cW_2_l, cplx * cW_i, cplx * cW_j, cplx * cW_l,
 			cvector *** cvDATA)
 {   int i,j,l,lim_NoB,i_max_2=i_max/2,j_max_2=j_max/2,l_max_2=l_max/2;
-	cvector * cvWork,* cvWork2,* cvResult;
+	cvector * cvWork,* cvResult;
+	const ddafft::plan * pl_l=NULL,* pl_j=NULL,* pl_i=NULL;
 
 /*********************************** z-FFT **********************************/
 
 	cvWork=(cvector *)malloc(l_max_2*sizeof(cvector));
 	if(cvWork==NULL)
 	{   printf("\n No enough memory for array cvWork[l_max]! ");
-		exit(1);
-	}
-
-	cvWork2=(cvector *)malloc(l_max_2*sizeof(cvector));
-	if(cvWork2==NULL)
-	{   printf("\n No enough memory for array cvWork2[l_max]! ");
 		exit(1);
 	}
 
@@ -406,44 +437,38 @@ void FFT_3D(int i_max, int j_max, int l_max, cplx * cW_2_i, cplx * cW_2_j,
 	}
 
 	Get_number_bits((l_max_2-1),&lim_NoB);
+	pl_l=fft_plan_for(l_max_2);
 
 	for(i=0;i<i_max_2;i++)
 		for(j=0;j<j_max_2;j++)
 		{   for(l=0;l<l_max_2;l++)
 				cvWork[l]=cvDATA[i][j][l];
 
-			FFT(lim_NoB,l_max_2,cW_2_l,cvWork,cvResult);
+			fft_line_fwd(pl_l,lim_NoB,l_max_2,cW_2_l,cvWork,cvResult);
 
-			for(l=0;l<l_max_2;l++)
-				cvWork2[l]=cvResult[l];
-
+			/* second (odd-bin) input: built before cvDATA is overwritten */
 			for(l=0;l<l_max_2;l++)
 			{   Cmul(cW_l[l],cvDATA[i][j][l].x,cvWork[l].x);
 				Cmul(cW_l[l],cvDATA[i][j][l].y,cvWork[l].y);
 				Cmul(cW_l[l],cvDATA[i][j][l].z,cvWork[l].z);
 			}
 
-			FFT(lim_NoB,l_max_2,cW_2_l,cvWork,cvResult);
+			for(l=0;l<l_max_2;l++)
+				cvDATA[i][j][2*l]=cvResult[l];
+
+			fft_line_fwd(pl_l,lim_NoB,l_max_2,cW_2_l,cvWork,cvResult);
 
 			for(l=0;l<l_max_2;l++)
-			{   cvDATA[i][j][2*l]=cvWork2[l];
 				cvDATA[i][j][2*l+1]=cvResult[l];
-			}
 		}
 
-	free(cvWork);   free(cvWork2);  free(cvResult);
+	free(cvWork);   free(cvResult);
 
 /*********************************** y-FFT **********************************/
 
 	cvWork=(cvector *)malloc(j_max_2*sizeof(cvector));
 	if(cvWork==NULL)
 	{   printf("\n No enough memory for array cvWork[j_max]! ");
-		exit(1);
-	}
-
-	cvWork2=(cvector *)malloc(j_max_2*sizeof(cvector));
-	if(cvWork2==NULL)
-	{   printf("\n No enough memory for array cvWork2[j_max]! ");
 		exit(1);
 	}
 
@@ -454,16 +479,14 @@ void FFT_3D(int i_max, int j_max, int l_max, cplx * cW_2_i, cplx * cW_2_j,
 	}
 
 	Get_number_bits((j_max_2-1),&lim_NoB);
+	pl_j=fft_plan_for(j_max_2);
 
 	for(i=0;i<i_max_2;i++)
 		for(l=0;l<l_max;l++)
 		{   for(j=0;j<j_max_2;j++)
 				cvWork[j]=cvDATA[i][j][l];
 
-			FFT(lim_NoB,j_max_2,cW_2_j,cvWork,cvResult);
-
-			for(j=0;j<j_max_2;j++)
-				cvWork2[j]=cvResult[j];
+			fft_line_fwd(pl_j,lim_NoB,j_max_2,cW_2_j,cvWork,cvResult);
 
 			for(j=0;j<j_max_2;j++)
 			{   Cmul(cW_j[j],cvDATA[i][j][l].x,cvWork[j].x);
@@ -471,27 +494,22 @@ void FFT_3D(int i_max, int j_max, int l_max, cplx * cW_2_i, cplx * cW_2_j,
 				Cmul(cW_j[j],cvDATA[i][j][l].z,cvWork[j].z);
 			}
 
-			FFT(lim_NoB,j_max_2,cW_2_j,cvWork,cvResult);
+			for(j=0;j<j_max_2;j++)
+				cvDATA[i][2*j][l]=cvResult[j];
+
+			fft_line_fwd(pl_j,lim_NoB,j_max_2,cW_2_j,cvWork,cvResult);
 
 			for(j=0;j<j_max_2;j++)
-			{   cvDATA[i][2*j][l]=cvWork2[j];
 				cvDATA[i][2*j+1][l]=cvResult[j];
-			}
 		}
 
-	free(cvWork);   free(cvWork2);  free(cvResult);
+	free(cvWork);   free(cvResult);
 
 /*********************************** x-FFT **********************************/
 
 	cvWork=(cvector *)malloc(i_max_2*sizeof(cvector));
 	if(cvWork==NULL)
 	{   printf("\n No enough memory for array cvWork[i_max]! ");
-		exit(1);
-	}
-
-	cvWork2=(cvector *)malloc(i_max_2*sizeof(cvector));
-	if(cvWork2==NULL)
-	{   printf("\n No enough memory for array cvWork2[i_max]! ");
 		exit(1);
 	}
 
@@ -502,16 +520,14 @@ void FFT_3D(int i_max, int j_max, int l_max, cplx * cW_2_i, cplx * cW_2_j,
 	}
 
 	Get_number_bits((i_max_2-1),&lim_NoB);
+	pl_i=fft_plan_for(i_max_2);
 
 	for(j=0;j<j_max;j++)
 		for(l=0;l<l_max;l++)
 		{   for(i=0;i<i_max_2;i++)
 				cvWork[i]=cvDATA[i][j][l];
 
-			FFT(lim_NoB,i_max_2,cW_2_i,cvWork,cvResult);
-
-			for(i=0;i<i_max_2;i++)
-				cvWork2[i]=cvResult[i];
+			fft_line_fwd(pl_i,lim_NoB,i_max_2,cW_2_i,cvWork,cvResult);
 
 			for(i=0;i<i_max_2;i++)
 			{   Cmul(cW_i[i],cvDATA[i][j][l].x,cvWork[i].x);
@@ -519,15 +535,16 @@ void FFT_3D(int i_max, int j_max, int l_max, cplx * cW_2_i, cplx * cW_2_j,
 				Cmul(cW_i[i],cvDATA[i][j][l].z,cvWork[i].z);
 			}
 
-			FFT(lim_NoB,i_max_2,cW_2_i,cvWork,cvResult);
+			for(i=0;i<i_max_2;i++)
+				cvDATA[2*i][j][l]=cvResult[i];
+
+			fft_line_fwd(pl_i,lim_NoB,i_max_2,cW_2_i,cvWork,cvResult);
 
 			for(i=0;i<i_max_2;i++)
-			{   cvDATA[2*i][j][l]=cvWork2[i];
 				cvDATA[2*i+1][j][l]=cvResult[i];
-			}
 		}
 
-	free(cvWork);   free(cvWork2);  free(cvResult);
+	free(cvWork);   free(cvResult);
 
 	return;
 }
@@ -540,6 +557,7 @@ void iFFT_3D(int i_max, int j_max, int l_max, cplx * cW_i, cplx * cW_j,
 			 cplx * cW_l, cvector *** cvDATA)
 {   int i,j,l,lim_NoB,i_max_2=i_max/2,j_max_2=j_max/2;
 	cvector * cvWork,* cvResult;
+	const ddafft::plan * pl_l=NULL,* pl_j=NULL,* pl_i=NULL;
 
 /*********************************** x-FFT **********************************/
 
@@ -556,13 +574,14 @@ void iFFT_3D(int i_max, int j_max, int l_max, cplx * cW_i, cplx * cW_j,
 	}
 
 	Get_number_bits((i_max-1),&lim_NoB);
+	pl_i=fft_plan_for(i_max);
 
 	for(j=0;j<j_max;j++)
 		for(l=0;l<l_max;l++)
 		{   for(i=0;i<i_max;i++)
 				cvWork[i]=cvDATA[i][j][l];
 
-			iFFT(lim_NoB,i_max,cW_i,cvWork,cvResult);
+			fft_line_inv(pl_i,lim_NoB,i_max,cW_i,cvWork,cvResult);
 
 			for(i=0;i<i_max;i++)
 				cvDATA[i][j][l]=cvResult[i];
@@ -585,13 +604,14 @@ void iFFT_3D(int i_max, int j_max, int l_max, cplx * cW_i, cplx * cW_j,
 	}
 
 	Get_number_bits((j_max-1),&lim_NoB);
+	pl_j=fft_plan_for(j_max);
 
 	for(i=0;i<i_max_2;i++)
 		for(l=0;l<l_max;l++)
 		{   for(j=0;j<j_max;j++)
 				cvWork[j]=cvDATA[i][j][l];
 
-			iFFT(lim_NoB,j_max,cW_j,cvWork,cvResult);
+			fft_line_inv(pl_j,lim_NoB,j_max,cW_j,cvWork,cvResult);
 
 			for(j=0;j<j_max;j++)
 				cvDATA[i][j][l]=cvResult[j];
@@ -614,13 +634,14 @@ void iFFT_3D(int i_max, int j_max, int l_max, cplx * cW_i, cplx * cW_j,
 	}
 
 	Get_number_bits((l_max-1),&lim_NoB);
+	pl_l=fft_plan_for(l_max);
 
 	for(i=0;i<i_max_2;i++)
 		for(j=0;j<j_max_2;j++)
 		{   for(l=0;l<l_max;l++)
 				cvWork[l]=cvDATA[i][j][l];
 
-			iFFT(lim_NoB,l_max,cW_l,cvWork,cvResult);
+			fft_line_inv(pl_l,lim_NoB,l_max,cW_l,cvWork,cvResult);
 
 			for(l=0;l<l_max;l++)
 				cvDATA[i][j][l]=cvResult[l];

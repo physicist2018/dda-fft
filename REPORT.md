@@ -23,13 +23,22 @@
 | 64³, 181 угол, 3 шага | 12.2 с | **4.03 с** | 3.02× |
 | **64³, 20 реализаций × 20 шагов (`W=7`)** | **576.4 с** | **76.6 с** | **7.5×** |
 
-Три источника ускорения:
+Три источника ускорения (этапы 0–4):
 
 1. **Бит-инверсия в FFT** — 2.85× (главный вклад).
 2. **Непрерывные блоки памяти + пул рабочих буферов + паддинг строк** — ещё ~1.17×.
 3. **Параллельные вычисления по реализациям** — 2.2× (на M1; на машинах с большей полосой памяти и большим числом P-ядер должно быть лучше).
 
-Память выросла на **1 %**. Результаты на детерминированных задачах **побитово идентичны** исходным.
+Плюс этап 6 — собственное radix-4/8 ядро 1-D FFT (раздел 4): на той же задаче 64³,
+20 шагов, один поток — **5.67 с → 4.00 с** (ещё 1.42×), а относительно исходного кода
+**18.98 с → 4.00 с**, то есть **4.75× суммарно**. Замеры этапа 6 сняты в отдельной сессии
+(см. оговорку в начале раздела 5): сравнивать между разделами надо отношения, а не
+абсолютные секунды.
+
+Память выросла на **1 %**. Через этапы 0–4 результаты на детерминированных задачах были
+**побитово идентичны** исходным; после этапа 6 побитовость исчезает — другой порядок
+суммирования в `float` даёт расхождение порядка 10⁻⁴ на самых слабых значимых элементах
+матрицы (раздел 4, «Этап 6»).
 
 Плюс исправлен **дефект чтения неинициализированной памяти** в итерационном процессе.
 
@@ -172,9 +181,75 @@ if (Error > Error_min) cvP = cvP_min;
 Приватно у воркера: карта занятости, поляризуемости, геометрия рассеяния, поля `Einc`/`Esc`,
 `dda_workspace`. Общие только на чтение: `cmA`, таблицы FFT, `ksc_ini`/`vNormal_ini`.
 
+### Этап 6 — собственное radix-4/8 ядро 1-D FFT (ветка `perf/fft-radix48`)
+
+Это последний пункт из раздела 11 предыдущей версии отчёта. Старое ядро (`fft_func.cpp`) —
+radix-2 DIT, которое (а) пересчитывало бит-инверсию на каждый вызов и (б) на каждой стадии
+копировало весь буфер между двумя массивами. Для строки из N точек это `log2(N)` полных
+копий на преобразование, и именно трафик памяти, а не арифметика, ограничивал ядро.
+
+Что сделано (`fft_kernel.hpp`, header-only; старый код оставлен):
+
+* План на каждый размер N строится один раз и дальше только читается: смешанная
+  digit-reversal перестановка под выбранную последовательность радиксов и полная таблица
+  `W_N^k`, посчитанная напрямую через `cos`/`sin`.
+* Преобразование **на месте**: нет пинг-понга между стадиями и нет промежуточного
+  `cvWork2`; строка загружается сразу в переставленном порядке (`out[k]=in[perm[k]]`).
+* Radix-8 и radix-4 бабочки (radix-8 собирается из двух radix-4); твиды `w=1`, `±i`,
+  `±(1±i)/√2` — без умножений; три компоненты `x, y, z` обрабатываются вместе.
+* Разложение `log2(N)` выбирается по таблице (`8·8`, `8·4`, `4·4`, `8·4·4`, …), крупный
+  radix — в первые, самые локальные стадии.
+
+Контракт сохранён: ядро по-прежнему считает **`DFT_N` в естественном порядке**. «Половинная»
+конвенция живёт не в ядре, а в `FFT_3D`: дополненная строка длины `2N` имеет только `N`
+ненулевых отсчётов, поэтому `X[2l] = DFT_N(x)[l]`, `X[2l+1] = DFT_N(x·W_{2N}^j)[l]`, и драйвер
+перемежает чётные/нечётные бины. Это подтверждено дельтатестом: старое ядро — обычное
+`DFT_N`, а составное преобразование строки — полное `DFT_2N` дополненной линии.
+
+Замеры (та же машина, что и в остальных разделах):
+
+| Что | Было | Стало | Ускорение |
+|---|---|---|---|
+| 1-D ядро, N=16 | 131 нс/строка | 77 | 1.71× |
+| 1-D ядро, N=32 | 282 | 184 | 1.53× |
+| 1-D ядро, N=64 | 632 | 390 | 1.62× |
+| 1-D ядро, N=128 | 1459 | 940 | 1.55× |
+| 1-D ядро, N=256 | 3299 | 2121 | 1.56× |
+| 64³, 20 шагов, 1 образец, `W=1` | 5.67 с | **4.00 с** | **1.42×** |
+| 128³, 5 шагов, 1 образец, `W=1` | 16.75 с | **11.56 с** | **1.45×** |
+| 64³, 4 образца × 5 шагов, `W=4` | 2.23 с | **1.58 с** | **1.41×** |
+| 64³, исходный код → эта ветка | 18.98 с | **4.00 с** | **4.75×** |
+
+Оценка из прежнего раздела 11 (10–15 % сквозного времени) оказалась заниженной: ядро
+ускорилось не в 1.2–1.5, а в 1.55–1.7 раза, что при доле FFT ≈80 % даёт 1.42×. Это ровно
+предел Амдала для ускорения ядра 1.6×: `0.8/1.6 + 0.2 = 0.70`.
+
+**Точность.** Само ядро считает точнее старого (ошибка относительно `double`-ДПФ на N=128:
+1.1·10⁻⁶ → 8.9·10⁻⁸), потому что таблица твидов считается напрямую, а не рекуррентным
+умножением. Но результат перестал быть **побитово** идентичным: `real` здесь `float`, и
+другой порядок суммирования даёт другой шум округления. Проверено:
+
+* дельтатест нового ядра по всем позициям, N=4…256: ошибка ≤ 7·10⁻⁸;
+* `float` master против `double` master и `float` new против `double` master на 64³:
+  худшие значимые элементы расходятся на 1.2·10⁻⁴ и 1.9·10⁻⁴ — то есть оба `float`-бинарника
+  одинаково далеки от точного ответа, а между собой — 8.8·10⁻⁵; расхождение растёт с числом
+  итераций (1.2·10⁻⁶ за 1 шаг → 5·10⁻⁵ за 10), как и положено накоплению округления;
+* сборка с `-DFFT_KERNEL_LEGACY` (старое ядро) воспроизводит master **побитово** — это
+  регрессионный тест на то, что переделка драйвера ничего не изменила.
+
+Проверки и замеры воспроизводятся харнессом `bench/` (`sh bench/build.sh`; режимы `delta`,
+`newdelta`, `accuracy`, `compare`, `half`, `speed`, `roundtrip`). В основной бинарник он не
+входит: `compile` собирает `*.cpp` из корня, а харнесс лежит в подкаталоге.
+
 ---
 
 ## 5. Результаты
+
+*Оговорка.* Таблицы этого раздела — замеры этапов 0–4, снятые в одной сессии. Замеры
+этапа 6 (раздел 4) сняты позже, в другой сессии и на более свободной машине, поэтому
+абсолютные секунды между разделами не сравнимы — сравнимы только отношения. Так, в этой
+сессии `master` даёт на 64³/20 шагов 5.67 с (а не 8.85 с, как в таблице ниже), и новый
+этап 6 даёт 4.00 с, то есть те же 1.42×.
 
 ### Сквозные замеры
 
@@ -331,6 +406,15 @@ pocketfft **в 1.4 раза медленнее**, потому что наш к�
 До этапа 2 рабочие массивы выделялись/освобождались внутри `DDA_FFT`, что само по себе
 исключало параллелизм. Теперь состояние вынесено в `dda_workspace`.
 
+### 7.5. `FourierPhase(1)` пишет за границу массива — **не исправлено**
+
+Найдено при отладке харнесса этапа 6. `FourierPhase(i_max, cW)` безусловно заполняет
+`cW[0]` и `cW[1]`, а таблицы `cW_2_*` выделяются размером `i_max/2`. При размерности
+решётки 2 это `FourierPhase(1)` в массив из одного элемента — запись на 8 байт за границу
+кучи. Достижимо только для решётки с размером 2 (физически бессмысленной), и только в
+старом коде; новое ядро эту таблицу не использует, но `main.cpp` её всё равно строит.
+Оставлено без правки, чтобы не менять поведение за рамками задачи.
+
 ---
 
 ## 8. Как пользоваться
@@ -435,14 +519,17 @@ AddressSanitizer — чисто.
 
 ## 11. Что осталось и почему не сделано
 
-Единственный оставшийся значимый рычаг — **собственное 1-D ядро FFT, переписанное под
-radix-4/8 с сохранением «половинной» конвенции** (первая половина спектра 2n-точечного
-преобразования). По замерам это дало бы 1.2–1.5× на ядре, то есть **10–15 % сквозного
-времени**; цена — аккуратная переработка горячего цикла и повторная побитовая валидация.
+Пункт про собственное radix-4/8 ядро — единственный оставшийся рычаг — закрыт этапом 6.
+После него FFT-свёртка упирается в предел Амдала: при доле FFT ≈80 % и ускорении ядра 1.6×
+остальные 20 % (точечное умножение, сборка/разборка строк, `CopyingBack`, шаг 0)
+ограничивают выигрыш величиной ≈1.43×, и он уже достигнут.
 
-Остальное закрыто измерениями (раздел 6). Дальнейший рост возможен только сменой алгоритма
-(например, многомасштабные/иерархические методы вместо FFT-свёртки на больших решётках), что
-является отдельным исследованием, а не оптимизацией.
+Мелкие резервы — совместить сборку строки с перестановкой, вынести рабочие буферы в
+`dda_workspace` вместо `malloc` на каждый трёхмерный вызов — дают единицы процентов и не
+окупают усложнения.
+
+Дальнейший рост возможен только сменой алгоритма (например, многомасштабные/иерархические
+методы вместо FFT-свёртки на больших решётках), а не оптимизацией текущей схемы.
 
 ---
 
@@ -457,11 +544,13 @@ cc64d5c  Fix: keep the step-0 iterate in cvP_min
 5f81e60  Stage 4a: per-thread random number generator
 ea7530d  Stage 4b: optional quiet mode for the solver
 6b6f799  Stage 4c: solve the samples in parallel
+(perf/fft-radix48)  Stage 6: mixed-radix 4/8 in-place 1-D FFT kernel
 ```
 
-Суммарно относительно базы: **8 файлов, +688 / −388 строк**. Изменения не трогают физику
-расчёта — только сборку, раскладку памяти, способ вычисления FFT-перестановки и порядок
-обхода независимых реализаций.
+Суммарно относительно базы: **8 файлов, +688 / −388 строк** для этапов 0–4; этап 6 добавляет
+`fft_kernel.hpp` и правку `fft_func.cpp` (+67 / −46). Изменения не трогают физику расчёта —
+только сборку, раскладку памяти, способ вычисления FFT и порядок обхода независимых
+реализаций.
 
 Ничего стороннего в репозитории нет: весь код — исходный, плюс этот отчёт. Заголовок
 pocketfft из раздела 6.5 в поставку не входит.
@@ -493,15 +582,23 @@ Build: `g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out`.
 | 64³, 181 angles, 3 steps | 12.2 s | **4.03 s** | 3.02× |
 | **64³, 20 samples × 20 steps (`W=7`)** | **576.4 s** | **76.6 s** | **7.5×** |
 
-Three sources of speed-up:
+Three sources of speed-up (stages 0–4):
 
 1. **Bit reversal in the FFT** — 2.85× (the main contribution).
 2. **Contiguous storage + a pool of workspaces + row padding** — another ~1.17×.
 3. **Solving the samples in parallel** — 2.2× (on an M1; machines with more memory
    bandwidth and more P-cores should do better).
 
-Memory grew by **1 %**. Results on deterministic targets are **bit-identical** to
-the original code.
+On top of that, stage 6 replaced the 1-D kernel with an own radix-4/8 transform
+(section 4): on the same 64³, 20-step, single-thread case **5.67 s → 4.00 s** (a further
+1.42×), and relative to the original code **18.98 s → 4.00 s**, that is **4.75× in total**.
+The stage-6 timings were taken in a separate session (see the note at the start of section
+5): compare ratios across sections, not absolute seconds.
+
+Memory grew by **1 %**. Through stage 4 the results on deterministic targets were
+**bit-identical** to the original code; after stage 6 that no longer holds — a different
+summation order in `float` gives differences of order 10⁻⁴ on the weakest significant
+matrix elements (section 4, stage 6).
 
 In addition, a **read of uninitialised memory** in the iteration was fixed.
 
@@ -654,9 +751,82 @@ Private to a worker: the occupancy map, the polarisabilities, the scattering
 geometry, the `Einc`/`Esc` fields, and its `dda_workspace`. Shared read-only:
 `cmA`, the FFT tables, `ksc_ini`/`vNormal_ini`.
 
+### Stage 6 — own radix-4/8 1-D FFT kernel (branch `perf/fft-radix48`)
+
+This is the item that section 11 of the previous report listed as the last remaining
+lever. The old kernel (`fft_func.cpp`) is a radix-2 DIT that (a) recomputed the bit
+reversal on every call and (b) copied the whole buffer between two ping-pong arrays on
+every stage. For a line of N points that is `log2(N)` full copies per transform — memory
+traffic, not arithmetic, was the limit.
+
+What was done (`fft_kernel.hpp`, header-only; the old code is kept):
+
+* A plan per size N is built once and then only read: a mixed-radix digit-reversal
+  permutation for the chosen radix sequence, plus a full `W_N^k` table computed
+  directly with `cos`/`sin`.
+* The transform runs **in place**: no ping-pong between stages and no intermediate
+  `cvWork2`; the line is loaded already permuted (`out[k]=in[perm[k]]`).
+* Radix-8 and radix-4 butterflies (radix-8 is built from two radix-4); the twiddles
+  `w=1`, `±i`, `±(1±i)/√2` need no multiplications; the three components `x, y, z`
+  are handled together.
+* The `log2(N)` split is chosen from a table (`8·8`, `8·4`, `4·4`, `8·4·4`, …), with the
+  large radix in the first, most local stages.
+
+The contract is unchanged: the kernel still computes **`DFT_N` in natural order**. The
+"half-spectrum" convention lives in `FFT_3D`, not in the kernel: the padded line of
+length `2N` has only `N` non-zero samples, so `X[2l] = DFT_N(x)[l]` and
+`X[2l+1] = DFT_N(x·W_{2N}^j)[l]`, and the driver interleaves even/odd bins. A delta test
+confirms this: the old kernel is a plain `DFT_N`, while the composite line transform is a
+full `DFT_2N` of the zero-padded line.
+
+Measurements (same machine as the rest of the report):
+
+| What | Before | After | Speed-up |
+|---|---|---|---|
+| 1-D kernel, N=16 | 131 ns/line | 77 | 1.71× |
+| 1-D kernel, N=32 | 282 | 184 | 1.53× |
+| 1-D kernel, N=64 | 632 | 390 | 1.62× |
+| 1-D kernel, N=128 | 1459 | 940 | 1.55× |
+| 1-D kernel, N=256 | 3299 | 2121 | 1.56× |
+| 64³, 20 steps, 1 sample, `W=1` | 5.67 s | **4.00 s** | **1.42×** |
+| 128³, 5 steps, 1 sample, `W=1` | 16.75 s | **11.56 s** | **1.45×** |
+| 64³, 4 samples × 5 steps, `W=4` | 2.23 s | **1.58 s** | **1.41×** |
+| 64³, original code → this branch | 18.98 s | **4.00 s** | **4.75×** |
+
+The estimate from the old section 11 (10–15 % of the end-to-end time) was too
+conservative: the kernel got 1.55–1.7× rather than 1.2–1.5×, which at an ≈80 % FFT share
+gives 1.42×. That is exactly the Amdahl limit for a 1.6× kernel:
+`0.8/1.6 + 0.2 = 0.70`.
+
+**Accuracy.** The kernel itself is more accurate than the old one (error against a
+`double` DFT at N=128: 1.1·10⁻⁶ → 8.9·10⁻⁸), because the twiddle table is computed
+directly instead of by recurrent multiplication. But the result is no longer
+**bit-identical**: `real` is `float` here, and a different summation order gives different
+rounding noise. Verified:
+
+* delta test of the new kernel at every position, N=4…256: error ≤ 7·10⁻⁸;
+* `float` master vs `double` master and `float` new vs `double` master at 64³: the worst
+  significant elements differ by 1.2·10⁻⁴ and 1.9·10⁻⁴ — both `float` binaries are equally
+  far from the exact answer, and 8.8·10⁻⁵ from each other; the difference grows with the
+  number of iterations (1.2·10⁻⁶ for 1 step → 5·10⁻⁵ for 10), as rounding accumulation
+  should;
+* a build with `-DFFT_KERNEL_LEGACY` (old kernel) reproduces master **bit for bit** — the
+  regression test that the driver rework changed nothing.
+
+The checks and measurements are reproduced by the `bench/` harness (`sh bench/build.sh`;
+modes `delta`, `newdelta`, `accuracy`, `compare`, `half`, `speed`, `roundtrip`). It is not
+part of the main binary: `compile` globs `*.cpp` in the root, while the harness lives in a
+subdirectory.
+
 ---
 
 ## 5. Results
+
+*Note.* The tables in this section are the stage 0–4 measurements, taken in one session.
+The stage-6 timings (section 4) were taken later, in a separate session and on a less busy
+machine, so absolute seconds are not comparable across sections — only ratios are. In this
+session `master` takes 5.67 s on 64³/20 steps (not 8.85 s as in the table below), and the
+new stage 6 takes 4.00 s, i.e. the same 1.42×.
 
 ### End-to-end measurements
 
@@ -824,6 +994,16 @@ change.
 Before stage 2 the working arrays were allocated and freed inside `DDA_FFT`, which
 by itself ruled out parallelism. The state now lives in `dda_workspace`.
 
+### 7.5. `FourierPhase(1)` writes past the end of the array — **not fixed**
+
+Found while debugging the stage-6 harness. `FourierPhase(i_max, cW)` unconditionally
+fills `cW[0]` and `cW[1]`, while the `cW_2_*` tables are allocated with `i_max/2`
+elements. For a lattice dimension of 2 that is `FourierPhase(1)` into a one-element
+array — an 8-byte write past the end of the heap block. It is reachable only for a
+lattice with dimension 2 (physically meaningless), and only in the old code; the new
+kernel does not use that table, but `main.cpp` still builds it. Left untouched so as
+not to change behaviour beyond the task.
+
 ---
 
 ## 8. How to use
@@ -933,16 +1113,18 @@ and AddressSanitizer — clean.
 
 ## 11. What is left and why it was not done
 
-The only significant lever left is **the 1-D FFT kernel itself, rewritten with
-radix-4/8 while keeping the "half-spectrum" convention** (the first half of the
-spectrum of a 2n-point transform). By the measurements this would give 1.2–1.5× on
-the kernel, that is, **10–15 % of the end-to-end time**; the price is a careful
-rework of the hot loop plus repeated bit-exact validation.
+The radix-4/8 kernel — the only significant lever that was left — is closed by stage 6.
+After it the FFT convolution hits the Amdahl limit: with an ≈80 % FFT share and a 1.6×
+kernel, the other 20 % (the pointwise multiplication, the row gather/scatter,
+`CopyingBack`, step 0) cap the gain at ≈1.43×, and that is already reached.
 
-Everything else is closed by the measurements (section 6). Further gains are only
-possible by changing the algorithm (for instance multi-level or hierarchical
-methods instead of the FFT convolution on large lattices), which is a separate
-research task rather than an optimisation.
+Small reserves — fusing the row gather with the permutation, moving the line buffers into
+`dda_workspace` instead of `malloc` per 3-D call — are worth a few per cent and do not pay
+for the extra complexity.
+
+Further gains are only possible by changing the algorithm (for instance multi-level or
+hierarchical methods instead of the FFT convolution on large lattices), not by optimising
+the present scheme.
 
 ---
 
@@ -957,11 +1139,13 @@ cc64d5c  Fix: keep the step-0 iterate in cvP_min
 5f81e60  Stage 4a: per-thread random number generator
 ea7530d  Stage 4b: optional quiet mode for the solver
 6b6f799  Stage 4c: solve the samples in parallel
+(perf/fft-radix48)  Stage 6: mixed-radix 4/8 in-place 1-D FFT kernel
 ```
 
-In total relative to the base: **8 files, +688 / −388 lines**. The changes do not
-touch the physics — only the build, the memory layout, the way the FFT permutation
-is computed, and the order in which independent samples are traversed.
+In total relative to the base: **8 files, +688 / −388 lines** for stages 0–4; stage 6 adds
+`fft_kernel.hpp` and a change to `fft_func.cpp` (+67 / −46). The changes do not touch the
+physics — only the build, the memory layout, the way the FFT is computed, and the order in
+which independent samples are traversed.
 
 Nothing third-party is in the repository: all the code is the original source plus
 this report. The pocketfft header mentioned in section 6.5 is not part of the
