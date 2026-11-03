@@ -1,5 +1,7 @@
 # Оптимизация DDA/FFT кода: отчёт
 
+**Русский** | [English](#english)
+
 Краткое описание программы, авторы и инструкция по сборке и запуску — в
 **[README.md](README.md)**. Этот документ посвящён только оптимизации: профилю,
 изменениям, замерам и тому, что было проверено и отвергнуто.
@@ -463,3 +465,504 @@ ea7530d  Stage 4b: optional quiet mode for the solver
 
 Ничего стороннего в репозитории нет: весь код — исходный, плюс этот отчёт. Заголовок
 pocketfft из раздела 6.5 в поставку не входит.
+
+---
+
+<a id="english"></a>
+
+# Optimising the DDA/FFT code: report
+
+A short description of the program, the authors, and build/run instructions are
+in **[README.md](README.md)**. This document covers only the optimisation work:
+the profile, the changes, the measurements, and what was tried and rejected.
+
+Branch: `perf/stages-0-3` (base — `master`, commit "Baseline: DDA/FFT source as received")
+
+All measurements were taken on: **Apple M1, 8 cores (4P + 4E), 8 GB RAM, Apple clang 16**.
+Build: `g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out`.
+
+---
+
+## 1. Summary
+
+| Case | Before | After | Speed-up |
+|---|---|---|---|
+| 64³, 19 angles, 20 steps, 1 sample | 29.6 s | **8.85 s** | **3.34×** |
+| 128³, 19 angles, 3 steps, solver 2 | 120.3 s | **35.7 s** | **3.37×** |
+| 32³, 19 angles, 40 steps | 6.33 s | **1.83 s** | 3.46× |
+| 64³, 181 angles, 3 steps | 12.2 s | **4.03 s** | 3.02× |
+| **64³, 20 samples × 20 steps (`W=7`)** | **576.4 s** | **76.6 s** | **7.5×** |
+
+Three sources of speed-up:
+
+1. **Bit reversal in the FFT** — 2.85× (the main contribution).
+2. **Contiguous storage + a pool of workspaces + row padding** — another ~1.17×.
+3. **Solving the samples in parallel** — 2.2× (on an M1; machines with more memory
+   bandwidth and more P-cores should do better).
+
+Memory grew by **1 %**. Results on deterministic targets are **bit-identical** to
+the original code.
+
+In addition, a **read of uninitialised memory** in the iteration was fixed.
+
+---
+
+## 2. Starting point
+
+The project implements the Discrete Dipole Approximation: light scattering by an
+ensemble of dipoles. The core is an iterative solution of the system
+`(I − αA)P = αE`, where the product by `A` is evaluated as a three-dimensional
+convolution via FFT. The problem size is set by the lattice `i_max × j_max × l_max`;
+cubes of 64³ and 128³ are used in practice. Internally the convolution works on an
+array zero-padded by a factor of 2 along each axis (that is, 8·N cells).
+
+Call structure:
+
+```
+main.cpp          loop over samples / orientations
+  particle.cpp    particle shape generation
+  dda_func.cpp    DDA_FFT: the iteration
+     Convolution  -> FFT_3D / iFFT_3D  (fft_func.cpp)
+     LinearComb, Copying, ldcScalMul, ldError   (per-cell loops)
+     CabsCext, FarField
+```
+
+---
+
+## 3. Where the time actually goes
+
+The profile was taken by instrumenting the current build (64³, 20 steps, 1 sample,
+`W=1`, 9.08 s):
+
+| Component | Time | Share |
+|---|---|---|
+| **FFT** (`FFT_3D` + `iFFT_3D`) | 7.27 s | **80 %** |
+| Pointwise multiply in the convolution | 0.61 s | 7 % |
+| `CopyingBack` | 0.31 s | 3 % |
+| Everything else (per-cell loops, `FarField`, step 0) | ~0.9 s | 10 % |
+
+Inside the FFT: the **1-D kernel is ≈ 63 %**, the line gather/scatter and the
+twiddle multiply ≈ 37 %.
+
+Memory: **673 bytes per lattice cell** in total, of which
+
+| Array | Bytes/cell | Comment |
+|---|---|---|
+| `cmA` (DFT of the interaction kernel) | 384 | shared by all threads |
+| `cvWork` (padded convolution buffer) | 192 | per thread |
+| `cvP`, `cvP_min`, `cvR`, `cvS` | 96 | per thread |
+| `cvG`, `cvH` (solver 2 only) | 48 | per thread |
+| `cAlpha` | 1 | |
+
+Hence: 128³ ≈ 1.4 GB with a single thread; 256³ (11.3 GB) does not fit in 8 GB at all.
+
+---
+
+## 4. What was done
+
+### Stage 0 — build (`df8a07a`)
+
+* `compile` switched to `-std=c++17 -pthread`. Apple clang was previously compiling
+  the files as **C++98**; without C++17 neither `std::thread` nor lambdas are available.
+* 12 cases of `double → float` narrowing in initialiser lists were removed (in
+  `dda_func.cpp` and `particle.cpp`) — under C++11+ this is a compile error, and
+  **in GCC as well**, so the fix is needed for Intel/AMD too.
+* 4 `printf("%d", time_t/clock_t)` warnings were changed to `%ld` (portability).
+* `-march=native` is deliberately **not** used: it was measured to give 0 %, and
+  leaving it out keeps the binary portable.
+
+### Stage 1 — bit reversal (`a3cf165`, `fft_func.cpp`) — **2.85×**
+
+```c
+/* before: malloc + free + pow() for EVERY element */
+bits = malloc(number_of_bits*sizeof(short int));
+...
+(*number_new) += (int)pow(2., (double)i) * bits[i];
+
+/* after */
+for (i = 0; i < number_of_bits; i++)
+    r = (r << 1) | ((number_old >> i) & 1);
+```
+
+The function is called once per FFT point, that is, for a 128³ transform —
+**6.3 million times** per three-dimensional transform, and twice per iteration
+(forward plus inverse). Microbenchmark: 69 ns/call → 3.5 ns/call. On the real
+case: 29.6 s → 10.4 s, output **bit-identical**.
+
+### Stage 2 — memory and a pool of workspaces (`bc67c5c`) — another 1.17×
+
+* `alloc_field3()`: an `ni×nj×nl` array is allocated as **one block** (3 `malloc`
+  calls instead of ~33 000 per call), with the row pointers carved out of that
+  block. The `cvector***` API is preserved, so no existing loop had to change.
+* `dda_workspace` — the seven working arrays live for the whole run instead of
+  being allocated and freed twice per sample. This removed repeated page-fault
+  storms and was a prerequisite for stage 4.
+
+**An important finding.** Making the storage contiguous on its own produced a
+**6 % regression**: the lattice dimensions are powers of two, so every row landed
+at a power-of-two offset and the three FFT passes kept hitting the same cache
+sets. Adding `FIELD_PAD = 1` (one element of row padding, 24 bytes) turned
+−6 % into **+17 %**, at a cost of +0.8 % memory. PAD = 1, 2, 4 and 8 were tried;
+one element is enough.
+
+### Fixing a defect (`cc64d5c`)
+
+At the end of `DDA_FFT` there is a fallback to the "best" iterate:
+
+```c
+if (Error > Error_min) cvP = cvP_min;
+```
+
+but `cvP_min` was filled **only if some iteration improved the discrepancy**. If
+the process never improved (typical for the simple iteration method with a large
+weight factor, and possible for the other methods on hard targets), the fallback
+copied **uninitialised memory** into the dipole moments. The symptom: the same
+binary with the same arguments returned `Cabs` = 4.5e7, 2.0e6 and 5.2e10 in three
+consecutive runs.
+
+The fix is to store the step-0 iterate immediately after it is computed.
+Behaviour is unchanged whenever at least one iteration improves the discrepancy
+(in that case `cvP_min` is overwritten anyway).
+
+Consequence for comparing with old results: **the output of solver 3 no longer
+matches what the original code produced, and it should not** — it used to be heap
+garbage (different from run to run), now it is the step-0 iterate. To verify: for
+a diverging iteration the result of `Max_Step=5` is now bit-identical to the
+result of `Max_Step=0`, and repeated runs agree with each other. Solvers 0, 1 and
+2 are unaffected by the fix (verified bit-identically on 32³, 64³, 128³ and on a
+non-cubic 32×64×32 lattice).
+
+### Stage 4 — solving the samples in parallel (`5f81e60`, `ea7530d`, `6b6f799`) — 2.2×
+
+The samples are independent, so the loop over them was parallelised:
+
+* **4a**: `rand()` keeps its state in a global variable and is not thread-safe. A
+  thread-local generator (xorshift64*) was added behind `dda_rand()`, returning the
+  same 31-bit range; all call sites in `particle.cpp`, `dda_func.cpp` and `main.cpp`
+  were switched to it.
+* **4b**: an `iVerbose` flag was added to `dda_workspace` — with several threads the
+  per-step discrepancy lines are not printed (they would interleave), and one
+  summary line per finished sample is printed instead.
+* **4c**: the body of the sample loop was moved into a lambda; inside it the local
+  names are bound to the worker's private arrays, so **the loop body itself is
+  unchanged** — only the accumulators and the printing differ. Workers take sample
+  indices from a `std::atomic`; the accumulation of the sums and the update of the
+  `.dst` file happen under a mutex once per sample (the file keeps its meaning, so
+  a run can still be interrupted and resumed).
+
+Private to a worker: the occupancy map, the polarisabilities, the scattering
+geometry, the `Einc`/`Esc` fields, and its `dda_workspace`. Shared read-only:
+`cmA`, the FFT tables, `ksc_ini`/`vNormal_ini`.
+
+---
+
+## 5. Results
+
+### End-to-end measurements
+
+| Configuration | Before | After | Speed-up |
+|---|---|---|---|
+| 32³, 19 angles, 40 steps | 6.33 s | 1.83 s | 3.46× |
+| 64³, 19 angles, 20 steps | 29.6 s | 8.85 s | 3.34× |
+| 64³, 181 angles, 3 steps | 12.2 s | 4.03 s | 3.02× |
+| 128³, 19 angles, 3 steps, solver 2 | 120.3 s | 35.7 s | 3.37× |
+| 64³, 20 samples × 20 steps, `W=1` | 576.4 s | 171.1 s | 3.37× |
+| 64³, 20 samples × 20 steps, **`W=7`** | 576.4 s | **76.6 s** | **7.5×** |
+
+### Scaling with the number of workers (64³, 20 samples × 20 steps)
+
+| W | 1 | 2 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|
+| time, s | 171.1 | 120.9 | 100.3 | 88.7 | 84.6 | **76.6** | 80.4 |
+| speed-up | 1.00 | 1.42 | 1.71 | 1.93 | 2.02 | **2.23** | 2.13 |
+
+128³ (4 samples, 2 steps): `W=1` 105.2 s, `W=2` 74.5 s (**1.41×**), `W=4` 78.7 s.
+
+**Why the optimum on 128³ is 2 workers.** A worker's working set there is 674 MB;
+two workers already saturate the M1 memory bandwidth (~68 GB/s), and the third and
+fourth do not help. On 64³ the set is three times smaller, so 7 workers pay off
+(the 8th competes with the system).
+
+**Threads cost nothing:** 4 threads complete the same work in exactly the time
+4 independent single-threaded processes take (100.3 s versus 100.5 s).
+
+### Memory
+
+Peak RSS on 128³: 1.508 → **1.524 GB** (+1 %). The increase is only the row padding.
+
+---
+
+## 6. Measured and rejected (with the evidence)
+
+This section matters as much as what was done: it records where not to go back to.
+
+### 6.1. Compacting the fields to active cells — capacity only, not speed
+
+A sphere fills 52 % of its bounding box, so storing `cvP/cvR/cvS/cvP_min` only for
+active cells would save −16 % of memory per worker. But on 64³/128³ memory **is not
+the constraint** (1.4 GB out of 8 GB), and it would not unlock a 256³ lattice
+anyway: `cmA` alone is 6.4 GB there. There is no speed gain either: the per-cell
+loops live in the ~10 % of the time that is left after the FFT.
+
+### 6.2. `cmA` cannot be reduced — verified numerically
+
+The hypothesis: the kernel has the form `A(r) = f(|r|)·I + g(|r|)·dyad(r)`, so its
+Fourier transform ought to be `Â(k) = A(k)·I + B(k)·k̂k̂` — only 2 complex numbers
+instead of 6 (48 → 16 bytes per cell, −36 % memory and −67 % of the convolution
+traffic). A diagnostic program was written against the real `CreateAMatrix` +
+`FFT_3D`:
+
+```
+grid 16³: max relative deviation from A*I+B*kk^ = 2.19e+01
+          (only k inside |k|d0 < pi/2)         = 8.67e-01
+grid 32³: max relative deviation                = 1.38e+01
+          (only k inside |k|d0 < pi/2)         = 1.04e+00
+```
+
+The deviation is ~100 % even at the centre of the Brillouin zone: the cubic
+anisotropy of the lattice-sampled kernel is comparable to the isotropic part. The
+identity **does not hold**, the idea is closed.
+
+### 6.3. Not zeroing the unused part of `cvWork` — 0 %
+
+For FFT mode 0 the transform really does not read 7/8 of the padded buffer
+(checked against the loop bounds of all three passes). Removing the zeroing gave
+**8.85 s versus 8.81 s** with a bit-identical result. The zeroing loop is cheap and
+cache-friendly as it is.
+
+### 6.4. Stage 5, items 1–2: SoA and batched lines — 0.37×…1.01×
+
+Six variants of the 1-D kernel were built and measured separately:
+
+| Variant | ns/line | Speed-up |
+|---|---|---|
+| A — current code (AoS `cvector`) | 1209 | 1.00× |
+| B — SoA by plane (6 arrays) | 2581 | **0.37×** |
+| C — AoS, the 6 consecutive `float`s of a butterfly | 1220 | 1.00× |
+| E — integer division `i*n/iStep` replaced by a multiply | 1193 | 1.01× |
+| all of the above with `-march=native` | — | 1.00× |
+| D — batch of 4 lines, layout `[l][4]`, vector along lines | 1132 | **0.90×** |
+| D + forced vectorisation (`#pragma clang loop vectorize`) | 1130 | 0.91× |
+
+The reasons: with a 64-element line, spreading the data over planes destroys
+locality (a butterfly touches 6 locations instead of two adjacent blocks); and in
+most stages the inner loop has 1–2 iterations while the parallelism lies along the
+line index, where the data is strided — the compiler states outright
+`cost-model indicates that vectorization is not beneficial`.
+
+### 6.5. pocketfft — not applicable (because of the problem structure, not quality)
+
+The library was taken from `github.com/mreineck/pocketfft` (BSD-3, header-only,
+portable).
+
+*A note on the integrity of the file*: lines such as `cb.i=twai*t4.r twbi*t3.r;`
+look like corruption, but this is the author's idiom — the sign comes from the
+macro argument (`POCKETFFT_PARTSTEP5a(...,+tw1i,+tw2i)`). The file is intact, it
+compiles, and it computes correctly for all sizes (verified for n = 2, 4, 5, 7, 8,
+10, 11).
+
+Measurements:
+
+| Integration | 128³, 3 components |
+|---|---|
+| our `FFT_3D` (as is) | **71 ms** |
+| pocketfft `c2c` over the whole padded volume | 102 ms |
+
+pocketfft is **1.4 times slower**, because our code knows about the zero padding:
+on the first pass it reads only the meaningful block (64³ out of 128³) and expands
+the result, that is, it does roughly **four times less work**. A general-purpose
+library has to transform the whole volume.
+
+Replacing only the inner kernel is not possible either: a delta test shows that
+the "1-D FFT" in this code is **the first half of the spectrum of a transform
+twice as long**, which is exactly what the padding requires (hence the `2*l` /
+`2*l+1` interleaving in the caller):
+
+```
+delta at position 1:
+  current kernel: +0.92-0.38i  +0.71-0.71i  +0.38-0.92i     step pi/8  -> 2n-point DFT
+  pocketfft:      +0.71-0.71i  +0.00-1.00i  -0.71-0.71i     step pi/4  -> n-point DFT
+```
+
+A correct replacement would have to compute the 2n-point transform — twice the
+work, which cancels the kernel's advantage (pocketfft is faster "per unit of work"
+by only 1.17× at n=64 and 1.48× at n=128).
+
+**Caution:** during this check a prototype with the swapped kernel showed "+3 % on
+64³ and +19 % on 128³", but those numbers are **invalid** — it was computing a
+different transform. The delta test is what exposed it. Do not use those numbers.
+
+The library header (`pocketfft_hdronly.h`, BSD-3, 121769 bytes, sha256
+`518a95c5…44c86d`) is not part of the repository and is not distributed with the
+project — it was needed only for this check. To repeat the measurements, take it
+from `github.com/mreineck/pocketfft`, branch `cpp`.
+
+---
+
+## 7. Defects found
+
+### 7.1. Uninitialised read in `cvP_min` — **fixed** (`cc64d5c`)
+
+See section 4. Symptom: a non-deterministic result from the simple iteration
+method (`Cabs` = 4.5e7 / 2.0e6 / 5.2e10 in three runs).
+
+### 7.2. `iMode_FFT = 1` (Rader–Brenner) is asymptotically poor — **not fixed**
+
+Inside the 1-D `FFT` this mode has a double loop `for(i < N/2) for(j < N/2)`, that
+is, **O(L²) per line** and O(N²) per three-dimensional transform. It is already
+slower than mode 0 on a 32³ lattice (1.36 s versus 1.00 s), and the gap grows with
+size.
+
+**Recommendation: do not use `iMode_FFT = 1`.** Mode 0 (Cooley–Tukey) is the only
+practical choice. The code of mode 1 is left untouched so that behaviour does not
+change.
+
+### 7.3. Building as C++98 by default — **fixed** (`df8a07a`)
+
+### 7.4. `DDA_FFT` was not reentrant — consequence fixed along the way
+
+Before stage 2 the working arrays were allocated and freed inside `DDA_FFT`, which
+by itself ruled out parallelism. The state now lives in `dda_workspace`.
+
+---
+
+## 8. How to use
+
+### Build
+
+```sh
+sh compile          # g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
+```
+
+A C++17 compiler is required: GCC 7+ or clang 5+. On Linux/Intel/AMD the system
+`g++` is enough; no extra packages are needed.
+
+### Number of threads
+
+```sh
+DDA_THREADS=4 ./dda_fft.out <arguments>        # explicit
+./dda_fft.out <arguments>                      # default: one per core
+```
+
+By default the core count is used, capped by the number of samples and by what
+memory allows (70 % of physical RAM minus the shared `A` matrix). The choice is
+reported as
+
+```
+ Worker threads: N
+```
+
+With `N = 1` the output is exactly as before (per-step discrepancies); with
+`N > 1` there is one summary line per finished sample.
+
+**The best number of threads depends on the lattice size**, because the limit is
+memory bandwidth, not cores. On an M1 with 8 GB the measured optimum was: 64³ → 7
+threads, 128³ → 2 threads. On other machines the optimum differs; one run with 1,
+2, 4 and 8 threads is enough to find it.
+
+### Running (the argument order is unchanged)
+
+```sh
+# 64³ sphere, m = 1.5 + 0.01i, 19 angles, 20 steps
+DDA_THREADS=7 ./dda_fft.out 0 180 10 out.dst out.dat 1 0 0 0 0 1 1 1.5 0.01 \
+               64 64 64 20 1 0.001 20 0 0
+```
+
+The last two arguments are `iMode_FFT` and `iMode_SolutionMethod`.
+
+---
+
+## 9. Portability (Intel / AMD / Apple Silicon)
+
+* The changes are architecture-independent: no intrinsics and no `-march=native`.
+  The syntax was checked for x86-64
+  (`clang++ --target=x86_64-apple-darwin -fsyntax-only`).
+* `FIELD_PAD = 1` also cures cache-set conflicts on x86 (4 KB pages, 64-byte
+  lines): the row stride stops being a multiple of a power of two.
+* **`long double` is not a problem on x86.** On Apple Silicon it equals `double`
+  (8 bytes); on x86 it is 80 bits (x87, no vectorisation). The share of the three
+  accumulation functions (`ldcScalMul`, `ldScalMulConj`, `ldError`) was measured:
+  **0.075 s out of 9.5 s = 0.8 %**. Even a 3–4× slowdown of x87 means +2–3 % on
+  Intel. Not worth touching.
+* **Results will not be bit-identical between arm64 and x86** — because of the
+  different width of `long double` in the accumulators. This was already true of
+  the code; within one platform everything is deterministic.
+
+---
+
+## 10. Reproducing the measurements
+
+General form of the command:
+
+```sh
+DDA_THREADS=<N> ./dda_fft.out 0 180 10 out.dst out.dat \
+    <samples> <orientation mode> ... <i_max> <j_max> <l_max> <x> \
+    <polarisability> <Error_max> <Max_Step> <iMode_FFT> <iMode_SolutionMethod>
+```
+
+The measurements quoted in this report (19 angles; sphere; `m = 1.5+0.01i`;
+`x = 20`; polarisability 1):
+
+```sh
+# 64³, 20 steps, solver 0
+./dda_fft.out 0 180 10 o.dst o.dat 1 0 0 0 0 1 1 1.5 0.01 64 64 64 20 1 0.001 20 0 0
+
+# 128³, 3 steps, solver 2
+./dda_fft.out 0 180 10 o.dst o.dat 1 0 0 0 0 1 1 1.5 0.01 128 128 128 40 1 0.001 3 0 2
+
+# 64³, 20 samples × 20 steps (the main "user" scenario)
+DDA_THREADS=7 ./dda_fft.out 0 180 10 o.dst o.dat 20 0 0 0 0 1 1 1.5 0.01 64 64 64 20 1 0.001 20 0 0
+```
+
+The correctness checks used during the work:
+
+```sh
+# bit-identical result
+cmp new.dat old.dat
+
+# thread safety
+g++ -O1 -g -std=c++17 -pthread -fsanitize=thread  -o t  *.cpp && DDA_THREADS=4 ./t ...
+g++ -O1 -g -std=c++17 -pthread -fsanitize=address -o a  *.cpp && DDA_THREADS=4 ./a ...
+```
+
+Checked: solvers 0/1/2 (and 3 — see above) and both FFT modes; lattices 32³, 64³,
+128³ and the non-cubic 32×64×32; fixed and random orientations; ThreadSanitizer
+and AddressSanitizer — clean.
+
+---
+
+## 11. What is left and why it was not done
+
+The only significant lever left is **the 1-D FFT kernel itself, rewritten with
+radix-4/8 while keeping the "half-spectrum" convention** (the first half of the
+spectrum of a 2n-point transform). By the measurements this would give 1.2–1.5× on
+the kernel, that is, **10–15 % of the end-to-end time**; the price is a careful
+rework of the hot loop plus repeated bit-exact validation.
+
+Everything else is closed by the measurements (section 6). Further gains are only
+possible by changing the algorithm (for instance multi-level or hierarchical
+methods instead of the FFT convolution on large lattices), which is a separate
+research task rather than an optimisation.
+
+---
+
+## 12. Change history
+
+```
+af63403  Baseline: DDA/FFT source as received
+df8a07a  Stage 0: build with C++17, fix narrowing inits and printf format specifiers
+a3cf165  Stage 1: replace malloc/pow bit-reversal with shift-based version
+bc67c5c  Stage 2: contiguous field storage and a reusable solver workspace
+cc64d5c  Fix: keep the step-0 iterate in cvP_min
+5f81e60  Stage 4a: per-thread random number generator
+ea7530d  Stage 4b: optional quiet mode for the solver
+6b6f799  Stage 4c: solve the samples in parallel
+```
+
+In total relative to the base: **8 files, +688 / −388 lines**. The changes do not
+touch the physics — only the build, the memory layout, the way the FFT permutation
+is computed, and the order in which independent samples are traversed.
+
+Nothing third-party is in the repository: all the code is the original source plus
+this report. The pocketfft header mentioned in section 6.5 is not part of the
+distribution.
