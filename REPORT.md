@@ -11,6 +11,8 @@
 Машина, на которой сняты все замеры: **Apple M1, 8 ядер (4P + 4E), 8 ГБ ОЗУ, Apple clang 16**.
 Компиляция: `g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out`.
 
+Версия программы — **7.1**; изменение и оптимизация: **К.А. Шмирко** <kshmirko@dvo.ru>, 2026.
+
 ---
 
 ## 1. Краткое резюме
@@ -552,6 +554,9 @@ ea7530d  Stage 4b: optional quiet mode for the solver
 только сборку, раскладку памяти, способ вычисления FFT и порядок обхода независимых
 реализаций.
 
+Баннер программы в `main.cpp` обновлён до версии **7.1** с указанием ответственного за
+изменение и оптимизацию (`K.A.Shmirko`, <kshmirko@dvo.ru>, 2026).
+
 Ничего стороннего в репозитории нет: весь код — исходный, плюс этот отчёт. Заголовок
 pocketfft из раздела 6.5 в поставку не входит.
 
@@ -569,6 +574,8 @@ Branch: `perf/stages-0-3` (base — `master`, commit "Baseline: DDA/FFT source a
 
 All measurements were taken on: **Apple M1, 8 cores (4P + 4E), 8 GB RAM, Apple clang 16**.
 Build: `g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out`.
+
+Program version — **7.1**; modification and optimisation: **K.A. Shmirko** <kshmirko@dvo.ru>, 2026.
 
 ---
 
@@ -1146,6 +1153,9 @@ In total relative to the base: **8 files, +688 / −388 lines** for stages 0–4
 `fft_kernel.hpp` and a change to `fft_func.cpp` (+67 / −46). The changes do not touch the
 physics — only the build, the memory layout, the way the FFT is computed, and the order in
 which independent samples are traversed.
+
+The program banner in `main.cpp` is updated to version **7.1**, naming the person responsible
+for the modification and optimisation (`K.A.Shmirko`, <kshmirko@dvo.ru>, 2026).
 
 Nothing third-party is in the repository: all the code is the original source plus
 this report. The pocketfft header mentioned in section 6.5 is not part of the

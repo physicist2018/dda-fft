@@ -165,7 +165,8 @@ int main(int argc, char ** argv)
 
     printf("\nComputation of light scattering by arbitrary target:");
     printf("\nDiscrete Dipole Approximation (DDA) with Fast Fourier Transform (FFT)");
-    printf("\nVersion 6.3, Copyright (C) 2001-2012 E.S.Zubko\n");
+    printf("\nVersion 6.3, Copyright (C) 2001-2012 E.S.Zubko");
+    printf("\nVersion 7.1, Modification and optimization: K.A.Shmirko (kshmirko@dvo.ru)\n");
     fflush(stdout);
 
     filename1=(char *)malloc(1024*sizeof(char));
@@ -1551,7 +1552,7 @@ int main(int argc, char ** argv)
             }
 
 
-    
+
 
 /* Accumulate the result of this sample and refresh the state file. */
 
@@ -1632,13 +1633,13 @@ int main(int argc, char ** argv)
     for(i=0;i<i_max;i++)
         for(j=0;j<j_max;j++)
             free(cAlpha[i][j]);
-        
+
     for(i=0;i<i_max;i++)
         free(cAlpha[i]);
 
     free(cAlpha);
 
-    
+
 
     for(i=0;i<2*i_max;i++)
         for(j=0;j<2*j_max;j++)
