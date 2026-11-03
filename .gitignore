@@ -8,3 +8,11 @@ dda
 # Run artifacts
 *.dst
 *.dat
+
+# Distribution archives
+*.tar.gz
+*.sha256
+
+# Third-party header kept locally for reference only (see REPORT.md 6.5);
+# it is not part of the build and is not distributed with this project.
+pocketfft_hdronly.h
