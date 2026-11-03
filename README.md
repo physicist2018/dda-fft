@@ -28,9 +28,13 @@ Version 6.3.
 
 The performance work (what was changed, what was measured, and what was tried
 and rejected) is documented in **[REPORT.md](REPORT.md)** (in Russian).
-Short version: about **3.4× faster** single-threaded and up to **7.5× faster**
-on a multi-core machine for a typical Monte-Carlo run, with output that is
-bit-identical to the original code on deterministic targets.
+Short version: about **4.75× faster** single-threaded on a 64³ lattice (3.35×
+from the first four stages plus 1.42× from an own mixed-radix FFT kernel), and
+up to **7.5× faster** on a multi-core machine for a typical Monte-Carlo run
+(measured before the kernel rewrite; the kernel adds about the same 1.4× at
+four workers). Through the first four stages the output was bit-identical to
+the original code; with the new kernel it agrees to `float` precision — about
+1e-4 relative on the weakest significant Mueller-matrix elements.
 
 ---
 
@@ -220,6 +224,11 @@ polarizability is computed per material.
 * **Use FFT method `0` (Cooley–Tukey).** Method `1` (Rader–Brenner) performs an
   O(N²) transform per line, so it is already slower on a 32³ lattice and the gap
   grows with size. It is kept only for reference.
+* The 1-D FFT kernel comes from `fft_kernel.hpp` (mixed-radix 4/8, in place)
+  when the line length is a power of two; otherwise `fft_func.cpp` falls back to
+  the original radix-2 kernel. Building with `-DFFT_KERNEL_LEGACY` forces the
+  original kernel everywhere, which reproduces the pre-rewrite output bit for
+  bit.
 * The simple iteration solver (`3`) needs a carefully chosen `rTau`; with a
   weight factor that is too large the process diverges. If no iteration improves
   the discrepancy, the program falls back to the iterate of step 0 and prints
@@ -241,12 +250,14 @@ polarizability is computed per material.
 | `main.cpp` | input parsing, sample loop, worker pool, output |
 | `dda_func.cpp` | DDA solver, convolutions, scalar products, far field |
 | `fft_func.cpp` | three-dimensional FFT |
+| `fft_kernel.hpp` | mixed-radix 4/8 in-place 1-D FFT kernel used by `fft_func.cpp` |
 | `particle.cpp` | particle generation |
 | `complex.cpp`, `cvector.cpp` | complex arithmetic, 3-vectors and 3×3 matrices |
 | `mmuller.cpp` | Jones and Mueller matrices |
 | `randomize.cpp` | random number generation |
 | `function.hpp`, `cplx.h`, `cvector.hpp`, `complex.hpp`, `mmuller.hpp`, `randomize.hpp` | declarations |
 | `compile` | build script |
+| `bench/` | standalone harness for the 1-D kernel: delta tests, accuracy, A/B timing |
 | `REPORT.md` | optimization report: profiling, changes, measurements, rejected ideas |
 
 ---
@@ -280,10 +291,14 @@ polarizability is computed per material.
 | Оптимизация, распараллеливание и рефакторинг | **Шмирко К.А. (Shmirko K.A.)** — <kshmirko@dvo.ru> |
 
 Работа по производительности (что изменено, что измерено и что проверено и
-отвергнуто) описана в **[REPORT.md](REPORT.md)**. Кратко: примерно **3.4×**
-ускорения в одном потоке и до **7.5×** на многоядерной машине на типичном
-прогоне с усреднением по реализациям, при этом результат на детерминированных
-частицах **побитово совпадает** с исходным кодом.
+отвергнуто) описана в **[REPORT.md](REPORT.md)**. Кратко: примерно **4.75×**
+ускорения в одном потоке на решётке 64³ (3.35× дали первые четыре этапа и ещё
+1.42× — собственное смешанное radix-4/8 ядро FFT) и до **7.5×** на
+многоядерной машине на типичном прогоне с усреднением по реализациям (замер до
+переписывания ядра; ядро добавляет примерно те же 1.4× на четырёх потоках). До
+этапа с ядром результат был побитово равен исходному коду; с новым ядром он
+совпадает с точностью `float` — около 1e-4 по относительной величине на самых
+слабых значимых элементах матрицы Мюллера.
 
 ---
 
@@ -476,6 +491,10 @@ DDA_THREADS=4 ./dda_fft.out …
 * **Используйте метод FFT `0` (Кули–Тьюки).** Метод `1` (Радера–Бреннера)
   выполняет O(N²) преобразование на строку, поэтому он медленнее уже на решётке
   32³, и разрыв растёт с размером. Он оставлен только для справки.
+* 1-D ядро БПФ берётся из `fft_kernel.hpp` (смешанное radix-4/8, на месте), когда
+  длина строки — степень двойки; иначе `fft_func.cpp` возвращается к исходному
+  radix-2 ядру. Сборка с `-DFFT_KERNEL_LEGACY` принудительно использует исходное
+  ядро — оно воспроизводит результат до переписывания побитово.
 * Метод простой итерации (`3`) требует аккуратно подобранного `rTau`; при слишком
   большом весовом множителе процесс расходится. Если ни одна итерация не уменьшила
   невязку, программа возвращается к итерации шага 0 и печатает
@@ -497,10 +516,12 @@ DDA_THREADS=4 ./dda_fft.out …
 | `main.cpp` | разбор аргументов, цикл по образцам, пул потоков, вывод |
 | `dda_func.cpp` | решатель DDA, свёртки, скалярные произведения, поле в дальней зоне |
 | `fft_func.cpp` | трёхмерное БПФ |
+| `fft_kernel.hpp` | смешанное radix-4/8 ядро 1-D БПФ, используется в `fft_func.cpp` |
 | `particle.cpp` | генерация частиц |
 | `complex.cpp`, `cvector.cpp` | комплексная арифметика, 3-векторы и матрицы 3×3 |
 | `mmuller.cpp` | матрицы Джонса и Мюллера |
 | `randomize.cpp` | генерация случайных чисел |
 | `function.hpp`, `cplx.h`, `cvector.hpp`, `complex.hpp`, `mmuller.hpp`, `randomize.hpp` | объявления |
 | `compile` | скрипт сборки |
+| `bench/` | отдельный харнесс для 1-D ядра: дельтатесты, точность, A/B-замеры |
 | `REPORT.md` | отчёт об оптимизации: профиль, изменения, замеры, отвергнутые идеи |
