@@ -61,6 +61,19 @@ different compiler it can be replaced by any equivalent command, e.g.
 g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
 ```
 
+### Git hooks
+
+The repository ships a `pre-commit` hook in `.githooks/` that rejects commits
+whose author or committer is the agent identity `Agent <agent@local>` instead
+of the configured author. Enable it once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+To bypass the check for a single commit (not recommended):
+`AGENT_AUTHOR_OK=1 git commit ...`.
+
 ---
 
 ## Running
@@ -301,6 +314,20 @@ sh compile          # g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
 ```sh
 g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
 ```
+
+### Git-хуки
+
+В репозитории есть хук `pre-commit` в каталоге `.githooks/`, который
+запрещает коммиты, у которых автор или коммиттер — служебная идентичность
+`Agent <agent@local>` вместо настроенного автора. Включите его один раз
+после клонирования:
+
+```sh
+git config core.hooksPath .githooks
+```
+
+Обойти проверку для одного коммита (не рекомендуется):
+`AGENT_AUTHOR_OK=1 git commit ...`.
 
 ---
 
