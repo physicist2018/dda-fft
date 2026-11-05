@@ -15,7 +15,7 @@ reports, as a function of scattering angle,
 averaged over a set of scattering planes and, if requested, over many random
 orientations or many random realizations of the particle.
 
-Version 7.1.
+Version 7.2.
 
 ---
 
@@ -24,7 +24,7 @@ Version 7.1.
 | | |
 |---|---|
 | Original program | **Zubko E.S.** — Version 6.3, Copyright (C) 2001–2012 |
-| Version 7.1 — modification and optimisation | **Shmirko K.A. (K.A.Shmirko)** — <kshmirko@dvo.ru>, 2026 |
+| Version 7.2 — modification, optimisation and the command-line interface | **Shmirko K.A. (K.A.Shmirko)** — <kshmirko@dvo.ru>, 2026 |
 
 The performance work (what was changed, what was measured, and what was tried
 and rejected) is documented in **[REPORT.md](REPORT.md)** (in Russian).
@@ -323,7 +323,7 @@ polarizability is computed per material.
 усреднённые по набору плоскостей рассеяния и, при необходимости, по множеству
 случайных ориентаций или множеству случайных реализаций частицы.
 
-Версия 7.1.
+Версия 7.2.
 
 ---
 
@@ -332,7 +332,7 @@ polarizability is computed per material.
 | | |
 |---|---|
 | Исходная программа | **Зубко Е.С. (Zubko E.S.)** — Version 6.3, Copyright (C) 2001–2012 |
-| Версия 7.1 — изменение и оптимизация | **Шмирко К.А. (K.A.Shmirko)** — <kshmirko@dvo.ru>, 2026 |
+| Версия 7.2 — изменение, оптимизация и командный интерфейс | **Шмирко К.А. (K.A.Shmirko)** — <kshmirko@dvo.ru>, 2026 |
 
 Работа по производительности (что изменено, что измерено и что проверено и
 отвергнуто) описана в **[REPORT.md](REPORT.md)**. Кратко: примерно **4.75×**

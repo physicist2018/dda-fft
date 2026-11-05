@@ -169,7 +169,7 @@ int main(int argc, char ** argv)
     printf("\nComputation of light scattering by arbitrary target:");
     printf("\nDiscrete Dipole Approximation (DDA) with Fast Fourier Transform (FFT)");
     printf("\nVersion 6.3, Copyright (C) 2001-2012 E.S.Zubko");
-    printf("\nVersion 7.1, Modification and optimization: K.A.Shmirko (kshmirko@dvo.ru) 2026\n");
+    printf("\nVersion 7.2, Modification and optimization: K.A.Shmirko (kshmirko@dvo.ru) 2026\n");
     fflush(stdout);
 
     filename1=(char *)malloc(1024*sizeof(char));
