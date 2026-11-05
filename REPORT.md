@@ -12,7 +12,7 @@
 Компиляция: `sh compile`, то есть `cc -O2 -std=c11 -c third_party/argtable3/argtable3.c` и
 `g++ -O3 -std=c++17 -pthread *.cpp third_party/argtable3/argtable3.o -o dda_fft.out`.
 
-Версия программы — **7.1**; изменение и оптимизация: **К.А. Шмирко** <kshmirko@dvo.ru>, 2026.
+Версия программы — **7.2**; изменение и оптимизация: **К.А. Шмирко** <kshmirko@dvo.ru>, 2026.
 
 ---
 
@@ -646,6 +646,8 @@ cc64d5c  Fix: keep the step-0 iterate in cvP_min
 ea7530d  Stage 4b: optional quiet mode for the solver
 6b6f799  Stage 4c: solve the samples in parallel
 (perf/fft-radix48)  Stage 6: mixed-radix 4/8 in-place 1-D FFT kernel
+4eae0b7  Vendor argtable3 3.3.1 for command-line parsing
+a0f77ac  Replace positional arguments with named command-line options
 ```
 
 Суммарно относительно базы: **8 файлов, +688 / −388 строк** для этапов 0–4; этап 6 добавляет
@@ -656,8 +658,14 @@ ea7530d  Stage 4b: optional quiet mode for the solver
 Баннер программы в `main.cpp` обновлён до версии **7.1** с указанием ответственного за
 изменение и оптимизацию (`K.A.Shmirko`, <kshmirko@dvo.ru>, 2026).
 
-Ничего стороннего в репозитории нет: весь код — исходный, плюс этот отчёт. Заголовок
-pocketfft из раздела 6.5 в поставку не входит.
+Ветка `feature/cli-argtable3` (тег **v7.2**) переводит настройку программы на именованные
+опции командной строки: разбор вынесен в `options.cpp`/`options.hpp`, позиционные аргументы
+удалены, добавлены проверки диапазонов, `--seed` и `--restart`. Версия в баннере, в
+`DDA_VERSION` и в документации — **7.2**.
+
+Из стороннего кода в репозитории только вендоренная argtable3 v3.3.1
+(`third_party/argtable3/`, BSD-3-Clause); заголовок pocketfft из раздела 6.5 в поставку
+не входит.
 
 ---
 
@@ -675,7 +683,7 @@ All measurements were taken on: **Apple M1, 8 cores (4P + 4E), 8 GB RAM, Apple c
 Build: `sh compile`, i.e. `cc -O2 -std=c11 -c third_party/argtable3/argtable3.c` and
 `g++ -O3 -std=c++17 -pthread *.cpp third_party/argtable3/argtable3.o -o dda_fft.out`.
 
-Program version — **7.1**; modification and optimisation: **K.A. Shmirko** <kshmirko@dvo.ru>, 2026.
+Program version — **7.2**; modification and optimisation: **K.A. Shmirko** <kshmirko@dvo.ru>, 2026.
 
 ---
 
@@ -1346,6 +1354,8 @@ cc64d5c  Fix: keep the step-0 iterate in cvP_min
 ea7530d  Stage 4b: optional quiet mode for the solver
 6b6f799  Stage 4c: solve the samples in parallel
 (perf/fft-radix48)  Stage 6: mixed-radix 4/8 in-place 1-D FFT kernel
+4eae0b7  Vendor argtable3 3.3.1 for command-line parsing
+a0f77ac  Replace positional arguments with named command-line options
 ```
 
 In total relative to the base: **8 files, +688 / −388 lines** for stages 0–4; stage 6 adds
@@ -1356,6 +1366,11 @@ which independent samples are traversed.
 The program banner in `main.cpp` is updated to version **7.1**, naming the person responsible
 for the modification and optimisation (`K.A.Shmirko`, <kshmirko@dvo.ru>, 2026).
 
-Nothing third-party is in the repository: all the code is the original source plus
-this report. The pocketfft header mentioned in section 6.5 is not part of the
-distribution.
+The `feature/cli-argtable3` branch (tag **v7.2**) moves the configuration to named
+command-line options: the parsing lives in `options.cpp`/`options.hpp`, the positional
+arguments are gone, and range checks, `--seed` and `--restart` were added. The version in
+the banner, in `DDA_VERSION` and in the documentation is **7.2**.
+
+The only third-party code in the repository is the vendored argtable3 v3.3.1
+(`third_party/argtable3/`, BSD-3-Clause); the pocketfft header mentioned in section 6.5 is
+not part of the distribution.

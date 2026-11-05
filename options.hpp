@@ -8,7 +8,7 @@
 #include "complex.hpp"      /* real, cplx */
 
 /* Program version, printed by --version. */
-#define DDA_VERSION "7.1"
+#define DDA_VERSION "7.2"
 
 /* Values that mark an option as "not given". After parse_options() returns
    PARSE_OK every field of sim_options holds a concrete value. */
