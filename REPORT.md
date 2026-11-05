@@ -9,7 +9,8 @@
 Ветка: `perf/stages-0-3` (база — `master`, коммит «Baseline: DDA/FFT source as received»)
 
 Машина, на которой сняты все замеры: **Apple M1, 8 ядер (4P + 4E), 8 ГБ ОЗУ, Apple clang 16**.
-Компиляция: `g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out`.
+Компиляция: `sh compile`, то есть `cc -O2 -std=c11 -c third_party/argtable3/argtable3.c` и
+`g++ -O3 -std=c++17 -pthread *.cpp third_party/argtable3/argtable3.o -o dda_fft.out`.
 
 Версия программы — **7.1**; изменение и оптимизация: **К.А. Шмирко** <kshmirko@dvo.ru>, 2026.
 
@@ -435,6 +436,77 @@ pocketfft **в 1.4 раза медленнее**, потому что наш к�
 старом коде; новое ядро эту таблицу не использует, но `main.cpp` её всё равно строит.
 Оставлено без правки, чтобы не менять поведение за рамками задачи.
 
+### 7.6. Зависание генерации частиц — **не исправлено**
+
+Найдено при регрессе нового интерфейса: все 14 типов целей сверялись с эталонной сборкой
+побайтово, и на двух наборах параметров **зависают обе сборки** — и старая (позиционные
+аргументы), и новая. То есть дефект существовал и раньше и с разбором командной строки
+не связан.
+
+**`iGenerateHedgehog` (`particle.cpp`)** — та же схема размещения, что в
+`iGenerateAnthrax` и `iGenerateDeadAnthrax`:
+
+```c
+while(m<iWormsNumber)
+{   cl0.r=-1.;
+    while(cl0.r<0.)      /* цилиндр не влез в матрицу — тянем заново */
+    {   ...
+        cl0=worm(...,length_worm,radius_worm,R2);
+    }
+    for(j=0;j<m;j++) { l=CrossTwoWorms(cl0,worms[j]); if(l==1) break; }
+    if(l==0) { worms[m]=cl0; m++; }
+}
+```
+
+Оба цикла бесконечны, если допустимого положения нет: внутренний — когда мономер
+(`--monomer-radius` вместе с `--monomer-length-ratio`) не помещается в матрицу, внешний —
+когда `iWormsNumber`, вычисленное из `--packing`, больше, чем можно разместить без
+пересечений. Проверки числа попыток нет, поэтому программа просто не возвращается из
+генерации.
+
+**`iGenerateHierarchicalEllipsoid`** — поиск затравочной ячейки:
+
+```c
+do
+{   iFlag=0;
+    do
+    {   v0 = случайная ячейка матрицы;
+        i0 = cAlpha[(int)v0.x][(int)v0.y][(int)v0.z];
+    }
+    while(i0!=1);        /* нужна ячейка именно первого материала */
+    ...  /* отбраковка уже выбранных seed'ов */
+}
+while(iFlag==1);
+vSeeds[m]=v0;
+```
+
+Внутренний цикл не завершится, если в текущем уровне **нет ни одной ячейки со значением 1**
+(или их меньше, чем `iNoSeeds`). Типично для тесной матрицы: например, у эллипсоида с малыми
+полуосями на решётке 8³ внутренняя область оказывается пустой.
+
+**Воспроизведение** (зависает и старая сборка с теми же параметрами):
+
+```sh
+# тип 7: слишком плотная упаковка для 8³
+./dda_fft.out --target hedgehog --packing 0.3 --monomer-radius 1 \
+    --monomer-length-ratio 1 --material 1.5 0.01 --grid 8 --size-parameter 2
+
+# тип 13: у эллипсоида 0.8 x 0.6 на 8³ не остаётся ячеек первого материала
+./dda_fft.out --target hierarchical --aspect 0.8 0.6 --levels 2 \
+    --material 1.5 0.01 --material 1.33 0.0 --seeds 111 222 \
+    --grid 8 --size-parameter 2
+```
+
+С параметрами, при которых места хватает, оба типа считаются нормально: тип 7 —
+`--packing 0.05 --monomer-radius 0.5 --grid 16`, тип 13 — `--aspect 1 1 --levels 2 --grid 16`
+(на этих наборах результаты новых и старых сборок совпали побайтово).
+
+**Почему не исправлено.** Правильная правка — ограничить число попыток и вернуть ошибку или
+частично заполненную частицу. Это меняет геометрию и, следовательно, числа, то есть требует
+отдельной задачи с проверкой физики. До исправления: подбирать `--packing`/`--monomer-*` под
+объём матрицы, для типа 13 брать достаточно крупную решётку, а в скриптах ставить внешний
+таймаут.
+
 ---
 
 ## 8. Как пользоваться
@@ -442,18 +514,21 @@ pocketfft **в 1.4 раза медленнее**, потому что наш к�
 ### Сборка
 
 ```sh
-sh compile          # g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
+sh compile
 ```
 
 Требуется компилятор с C++17: GCC 7+ либо clang 5+. На Linux/Intel/AMD подойдёт системный
-`g++`; отдельные пакеты не нужны.
+`g++`; отдельные пакеты не нужны: argtable3 вендорена в `third_party/argtable3/`
+(BSD-3-Clause) и собирается тем же `compile` как C.
 
 ### Число потоков
 
 ```sh
-DDA_THREADS=4 ./dda_fft.out <аргументы>        # явно
-./dda_fft.out <аргументы>                      # по умолчанию: по числу ядер
+./dda_fft.out --threads 4 <опции>              # явно
+./dda_fft.out <опции>                          # по умолчанию: по числу ядер
 ```
+
+Переменная окружения `DDA_THREADS` учитывается, если `--threads` не задан.
 
 По умолчанию берётся число ядер, но не больше числа реализаций и не больше, чем позволяет
 память (70 % физической ОЗУ минус общая `A`-матрица). О выборе печатается строка
@@ -469,15 +544,15 @@ DDA_THREADS=4 ./dda_fft.out <аргументы>        # явно
 а не ядра. На M1/8 ГБ измеренный оптимум: 64³ → 7 потоков, 128³ → 2 потока. На других
 машинах оптимум другой, его стоит подобрать одним прогоном с 1, 2, 4, 8 потоками.
 
-### Запуск (порядок аргументов не менялся)
+### Запуск
 
 ```sh
 # 64³ сфера, m = 1.5 + 0.01i, 19 углов, 20 шагов
-DDA_THREADS=7 ./dda_fft.out 0 180 10 out.dst out.dat 1 0 0 0 0 1 1 1.5 0.01 \
-               64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --threads 7 --target sphere --material 1.5 0.01 --grid 64 \
+              --size-parameter 20
 ```
 
-Последние два аргумента — `iMode_FFT` и `iMode_SolutionMethod`.
+Метод FFT и метод решения задаются опциями `--fft` и `--solver`.
 
 ---
 
@@ -502,22 +577,27 @@ DDA_THREADS=7 ./dda_fft.out 0 180 10 out.dst out.dat 1 0 0 0 0 1 1 1.5 0.01 \
 Общий вид команды:
 
 ```sh
-DDA_THREADS=<N> ./dda_fft.out 0 180 10 out.dst out.dat \
-    <реализаций> <режим ориентации> ... <i_max> <j_max> <l_max> <x> \
-    <поляризуемость> <Error_max> <Max_Step> <iMode_FFT> <iMode_SolutionMethod>
+./dda_fft.out --state out.dst --output out.dat --samples <N> \
+    --orientation <fixed|mc> --target sphere --material <mre> <mi> \
+    --grid <i> <j> <l> --size-parameter <x> --polarizability <1..5> \
+    --tolerance <Error_max> --max-steps <Max_Step> --fft <0|1> --solver <0..3>
 ```
 
 Замеры из отчёта (19 углов; сфера; `m = 1.5+0.01i`; `x = 20`; поляризуемость 1):
 
 ```sh
 # 64³, 20 шагов, метод 0
-./dda_fft.out 0 180 10 o.dst o.dat 1 0 0 0 0 1 1 1.5 0.01 64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --state o.dst --output o.dat --target sphere --material 1.5 0.01 \
+    --grid 64 64 64 --size-parameter 20 --tolerance 1e-3 --max-steps 20 --fft 0 --solver 0
 
 # 128³, 3 шага, метод 2
-./dda_fft.out 0 180 10 o.dst o.dat 1 0 0 0 0 1 1 1.5 0.01 128 128 128 40 1 0.001 3 0 2
+./dda_fft.out --state o.dst --output o.dat --target sphere --material 1.5 0.01 \
+    --grid 128 --size-parameter 40 --tolerance 1e-3 --max-steps 3 --fft 0 --solver 2
 
 # 64³, 20 реализаций × 20 шагов (главный «пользовательский» сценарий)
-DDA_THREADS=7 ./dda_fft.out 0 180 10 o.dst o.dat 20 0 0 0 0 1 1 1.5 0.01 64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --threads 7 --state o.dst --output o.dat --samples 20 \
+    --target sphere --material 1.5 0.01 --grid 64 --size-parameter 20 \
+    --tolerance 1e-3 --max-steps 20 --fft 0 --solver 0
 ```
 
 Проверки корректности, использованные в работе:
@@ -527,8 +607,9 @@ DDA_THREADS=7 ./dda_fft.out 0 180 10 o.dst o.dat 20 0 0 0 0 1 1 1.5 0.01 64 64 6
 cmp new.dat old.dat
 
 # потокобезопасность
-g++ -O1 -g -std=c++17 -pthread -fsanitize=thread  -o t  *.cpp && DDA_THREADS=4 ./t ...
-g++ -O1 -g -std=c++17 -pthread -fsanitize=address -o a  *.cpp && DDA_THREADS=4 ./a ...
+cc -O1 -std=c11 -c third_party/argtable3/argtable3.c -o argtable3.o
+g++ -O1 -g -std=c++17 -pthread -fsanitize=thread  -o t *.cpp argtable3.o && ./t --threads 4 ...
+g++ -O1 -g -std=c++17 -pthread -fsanitize=address -o a *.cpp argtable3.o && ./a --threads 4 ...
 ```
 
 Проверено: методы 0/1/2 (и 3 — см. ниже) и оба режима FFT; решётки 32³, 64³, 128³ и
@@ -591,7 +672,8 @@ the profile, the changes, the measurements, and what was tried and rejected.
 Branch: `perf/stages-0-3` (base — `master`, commit "Baseline: DDA/FFT source as received")
 
 All measurements were taken on: **Apple M1, 8 cores (4P + 4E), 8 GB RAM, Apple clang 16**.
-Build: `g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out`.
+Build: `sh compile`, i.e. `cc -O2 -std=c11 -c third_party/argtable3/argtable3.c` and
+`g++ -O3 -std=c++17 -pthread *.cpp third_party/argtable3/argtable3.o -o dda_fft.out`.
 
 Program version — **7.1**; modification and optimisation: **K.A. Shmirko** <kshmirko@dvo.ru>, 2026.
 
@@ -1046,6 +1128,78 @@ lattice with dimension 2 (physically meaningless), and only in the old code; the
 kernel does not use that table, but `main.cpp` still builds it. Left untouched so as
 not to change behaviour beyond the task.
 
+### 7.6. Particle generation can hang — **not fixed**
+
+Found while regressing the new interface: all 14 target types were compared with
+the reference build byte for byte, and on two parameter sets **both builds hang** —
+the old one (positional arguments) and the new one. So the defect pre-dates the
+command-line work and is unrelated to it.
+
+**`iGenerateHedgehog` (`particle.cpp`)** — the same placement scheme as in
+`iGenerateAnthrax` and `iGenerateDeadAnthrax`:
+
+```c
+while(m<iWormsNumber)
+{   cl0.r=-1.;
+    while(cl0.r<0.)      /* the cylinder does not fit — draw another one */
+    {   ...
+        cl0=worm(...,length_worm,radius_worm,R2);
+    }
+    for(j=0;j<m;j++) { l=CrossTwoWorms(cl0,worms[j]); if(l==1) break; }
+    if(l==0) { worms[m]=cl0; m++; }
+}
+```
+
+Both loops are unbounded when no valid placement exists: the inner one when the
+monomer (`--monomer-radius` together with `--monomer-length-ratio`) does not fit
+into the matrix, the outer one when `iWormsNumber`, derived from `--packing`, is
+larger than the number of non-overlapping worms that fit. There is no attempt
+limit, so the call never returns.
+
+**`iGenerateHierarchicalEllipsoid`** — the seed-cell search:
+
+```c
+do
+{   iFlag=0;
+    do
+    {   v0 = random cell of the lattice;
+        i0 = cAlpha[(int)v0.x][(int)v0.y][(int)v0.z];
+    }
+    while(i0!=1);        /* a cell of the first material is required */
+    ...  /* reject the already chosen seeds */
+}
+while(iFlag==1);
+vSeeds[m]=v0;
+```
+
+The inner loop never ends when the current level has **no cell with value 1**
+(or fewer than `iNoSeeds` such cells). That is typical for a tight matrix: for an
+ellipsoid with small semi-axes on an 8³ lattice the inner region is empty.
+
+**Reproduction** (the old build hangs as well with the same parameters):
+
+```sh
+# type 7: packing too high for an 8³ lattice
+./dda_fft.out --target hedgehog --packing 0.3 --monomer-radius 1 \
+    --monomer-length-ratio 1 --material 1.5 0.01 --grid 8 --size-parameter 2
+
+# type 13: the 0.8 x 0.6 ellipsoid leaves no first-material cells on 8³
+./dda_fft.out --target hierarchical --aspect 0.8 0.6 --levels 2 \
+    --material 1.5 0.01 --material 1.33 0.0 --seeds 111 222 \
+    --grid 8 --size-parameter 2
+```
+
+With parameters that leave enough room both types run normally: type 7 with
+`--packing 0.05 --monomer-radius 0.5 --grid 16`, type 13 with
+`--aspect 1 1 --levels 2 --grid 16` (the new and old builds agreed byte for byte
+on those sets).
+
+**Why it is not fixed.** The proper fix is to bound the number of attempts and
+return an error or a partially filled particle. That changes the geometry and
+therefore the numbers, so it needs a separate task with a physics check. Until
+then: choose `--packing`/`--monomer-*` that fit the matrix volume, use a large
+enough lattice for type 13, and put an external timeout around scripted runs.
+
 ---
 
 ## 8. How to use
@@ -1053,18 +1207,22 @@ not to change behaviour beyond the task.
 ### Build
 
 ```sh
-sh compile          # g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
+sh compile
 ```
 
 A C++17 compiler is required: GCC 7+ or clang 5+. On Linux/Intel/AMD the system
-`g++` is enough; no extra packages are needed.
+`g++` is enough; no extra packages are needed: argtable3 is vendored in
+`third_party/argtable3/` (BSD-3-Clause) and built as C by the same `compile` script.
 
 ### Number of threads
 
 ```sh
-DDA_THREADS=4 ./dda_fft.out <arguments>        # explicit
-./dda_fft.out <arguments>                      # default: one per core
+./dda_fft.out --threads 4 <options>            # explicit
+./dda_fft.out <options>                        # default: one per core
 ```
+
+The `DDA_THREADS` environment variable is still honoured when `--threads` is
+not given.
 
 By default the core count is used, capped by the number of samples and by what
 memory allows (70 % of physical RAM minus the shared `A` matrix). The choice is
@@ -1082,15 +1240,15 @@ memory bandwidth, not cores. On an M1 with 8 GB the measured optimum was: 64³ �
 threads, 128³ → 2 threads. On other machines the optimum differs; one run with 1,
 2, 4 and 8 threads is enough to find it.
 
-### Running (the argument order is unchanged)
+### Running
 
 ```sh
 # 64³ sphere, m = 1.5 + 0.01i, 19 angles, 20 steps
-DDA_THREADS=7 ./dda_fft.out 0 180 10 out.dst out.dat 1 0 0 0 0 1 1 1.5 0.01 \
-               64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --threads 7 --target sphere --material 1.5 0.01 --grid 64 \
+              --size-parameter 20
 ```
 
-The last two arguments are `iMode_FFT` and `iMode_SolutionMethod`.
+The FFT method and the solver are selected with `--fft` and `--solver`.
 
 ---
 
@@ -1117,9 +1275,10 @@ The last two arguments are `iMode_FFT` and `iMode_SolutionMethod`.
 General form of the command:
 
 ```sh
-DDA_THREADS=<N> ./dda_fft.out 0 180 10 out.dst out.dat \
-    <samples> <orientation mode> ... <i_max> <j_max> <l_max> <x> \
-    <polarisability> <Error_max> <Max_Step> <iMode_FFT> <iMode_SolutionMethod>
+./dda_fft.out --state out.dst --output out.dat --samples <N> \
+    --orientation <fixed|mc> --target sphere --material <mre> <mi> \
+    --grid <i> <j> <l> --size-parameter <x> --polarizability <1..5> \
+    --tolerance <Error_max> --max-steps <Max_Step> --fft <0|1> --solver <0..3>
 ```
 
 The measurements quoted in this report (19 angles; sphere; `m = 1.5+0.01i`;
@@ -1127,13 +1286,17 @@ The measurements quoted in this report (19 angles; sphere; `m = 1.5+0.01i`;
 
 ```sh
 # 64³, 20 steps, solver 0
-./dda_fft.out 0 180 10 o.dst o.dat 1 0 0 0 0 1 1 1.5 0.01 64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --state o.dst --output o.dat --target sphere --material 1.5 0.01 \
+    --grid 64 64 64 --size-parameter 20 --tolerance 1e-3 --max-steps 20 --fft 0 --solver 0
 
 # 128³, 3 steps, solver 2
-./dda_fft.out 0 180 10 o.dst o.dat 1 0 0 0 0 1 1 1.5 0.01 128 128 128 40 1 0.001 3 0 2
+./dda_fft.out --state o.dst --output o.dat --target sphere --material 1.5 0.01 \
+    --grid 128 --size-parameter 40 --tolerance 1e-3 --max-steps 3 --fft 0 --solver 2
 
 # 64³, 20 samples × 20 steps (the main "user" scenario)
-DDA_THREADS=7 ./dda_fft.out 0 180 10 o.dst o.dat 20 0 0 0 0 1 1 1.5 0.01 64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --threads 7 --state o.dst --output o.dat --samples 20 \
+    --target sphere --material 1.5 0.01 --grid 64 --size-parameter 20 \
+    --tolerance 1e-3 --max-steps 20 --fft 0 --solver 0
 ```
 
 The correctness checks used during the work:
@@ -1143,8 +1306,9 @@ The correctness checks used during the work:
 cmp new.dat old.dat
 
 # thread safety
-g++ -O1 -g -std=c++17 -pthread -fsanitize=thread  -o t  *.cpp && DDA_THREADS=4 ./t ...
-g++ -O1 -g -std=c++17 -pthread -fsanitize=address -o a  *.cpp && DDA_THREADS=4 ./a ...
+cc -O1 -std=c11 -c third_party/argtable3/argtable3.c -o argtable3.o
+g++ -O1 -g -std=c++17 -pthread -fsanitize=thread  -o t *.cpp argtable3.o && ./t --threads 4 ...
+g++ -O1 -g -std=c++17 -pthread -fsanitize=address -o a *.cpp argtable3.o && ./a --threads 4 ...
 ```
 
 Checked: solvers 0/1/2 (and 3 — see above) and both FFT modes; lattices 32³, 64³,

@@ -4,6 +4,7 @@
 
 #include "function.hpp"
 #include "randomize.hpp"
+#include "options.hpp"
 
 #include <thread>
 #include <vector>
@@ -30,14 +31,15 @@ static double physical_memory(void)
    arrays, the padded convolution buffer, the two BiCGStab arrays and the
    occupancy map. */
 
-/* DDA_THREADS from the environment if it is set, one worker per core
-   otherwise, but never more workers than the private workspaces allow.
+/* The count requested by --threads, or DDA_THREADS from the environment if
+   the option is absent, one worker per core otherwise, but never more workers
+   than the private workspaces allow.
 
    One worker needs the six i*j*l field arrays (cvP, cvP_min, cvR, cvS, cvG,
    cvH), the padded 2i x 2j x 2l convolution buffer and the occupancy map;
    the A-matrix is shared by all of them. */
 
-static int worker_count(int i_max, int j_max, int l_max)
+static int worker_count(int i_max, int j_max, int l_max, int iRequested)
 {   const char * s=getenv("DDA_THREADS");
     double shared,footprint,budget;
     int n,fits;
@@ -45,7 +47,8 @@ static int worker_count(int i_max, int j_max, int l_max)
     n=(int)sysconf(_SC_NPROCESSORS_ONLN);
     if(n<1) n=1;
 
-    if(s!=NULL)
+    if(iRequested>0)    n=iRequested;
+    else if(s!=NULL)
     {   int v=atoi(s);
         if(v>0) n=v;
     }
@@ -64,7 +67,7 @@ static int worker_count(int i_max, int j_max, int l_max)
     if(fits<n)
     {   printf("\n %d worker(s) fit into memory, %.0f MB each; using %d.",
                fits,footprint/1048576.,fits);
-        printf("\n Set DDA_THREADS to change this. ");
+        printf("\n Use --threads to change this. ");
         fflush(stdout);
         n=fits;
     }
@@ -137,7 +140,7 @@ int main(int argc, char ** argv)
 
 /******************************** Other variable ****************************/
 
-    int i,j,l,m,iNoA,iNoD,iFlag,iSorts,iBites,X,Y,Z,T;
+    int i,j,l,m,iNoA,iNoD,iSorts,iBites,X,Y,Z,T;
     int * iSeeds,* iListMV;
     char * filename1,* filename2;
     real kd,theta,cos_psi,sin_psi,cos_iota,sin_iota,cos_kappa,sin_kappa,rDepth;
@@ -166,36 +169,31 @@ int main(int argc, char ** argv)
     printf("\nComputation of light scattering by arbitrary target:");
     printf("\nDiscrete Dipole Approximation (DDA) with Fast Fourier Transform (FFT)");
     printf("\nVersion 6.3, Copyright (C) 2001-2012 E.S.Zubko");
-    printf("\nVersion 7.1, Modification and optimization: K.A.Shmirko (kshmirko@dvo.ru)\n");
+    printf("\nVersion 7.1, Modification and optimization: K.A.Shmirko (kshmirko@dvo.ru) 2026\n");
     fflush(stdout);
 
     filename1=(char *)malloc(1024*sizeof(char));
     filename2=(char *)malloc(1024*sizeof(char));
-    random_init();
-    //srand((unsigned)time(NULL));
-    time_begin=time(NULL);
 
 /****************************************************************************/
 /******************************** Input data ********************************/
 /****************************************************************************/
 
-    if(argc>1)  theta_inf=atof(argv[1]);
-    else
-    {   printf("\n Input the bottom limit of range of phase angles ");
-        scanf("%f",&theta_inf);
+    sim_options opt;
+
+    {   int parse_rc=parse_options(argc,argv,&opt);
+
+        if(parse_rc==PARSE_EXIT_OK) return 0;
+        if(parse_rc!=PARSE_OK)      return 2;
     }
 
-    if(argc>2)  theta_up=atof(argv[2]);
-    else
-    {   printf("\n Input the upper limit of range of phase angles ");
-        scanf("%f",&theta_up);
-    }
+    if(opt.has_seed)    random_init_seed(opt.seed);
+    else                random_init();
+    time_begin=time(NULL);
 
-    if(argc>3)  theta_step=atof(argv[3]);
-    else
-    {   printf("\n Input the increment of phase angles ");
-        scanf("%f",&theta_step);
-    }
+    theta_inf=(real)opt.theta_min;
+    theta_up=(real)opt.theta_max;
+    theta_step=(real)opt.theta_step;
 
     iNoA=rounding(((theta_up-theta_inf)/theta_step)+1.);
 
@@ -211,16 +209,14 @@ int main(int argc, char ** argv)
         exit(1);
     }
 
-    if(argc>4)  strcpy(filename1,argv[4]);
-    else
-    {   printf("\n Input name for the binary result file (dst) ");
-        scanf("%s",filename1);
-    }
+    strcpy(filename1,opt.output_file.c_str());
 
     // begin of reading of the dst-file
-    storage_data=fopen(filename1,"rb+");
+    if(opt.restart)     remove(opt.state_file.c_str());
+
+    storage_data=fopen(opt.state_file.c_str(),"rb+");
     if(storage_data==NULL)          // file doesn't exist; it needs to be created
-    {   storage_data=fopen(filename1,"wb+");
+    {   storage_data=fopen(opt.state_file.c_str(),"wb+");
         if(storage_data==NULL)
         {   printf("\n Cannot create the dst-file! ");
             exit(2);
@@ -242,7 +238,7 @@ int main(int argc, char ** argv)
     }
     fclose(storage_data);   // closing the dst-file
 
-    storage_data=fopen(filename1,"rb+");
+    storage_data=fopen(opt.state_file.c_str(),"rb+");
     if(storage_data!=NULL)
     {   l=fread(&iRealizationCounter,sizeof(iRealizationCounter),1,storage_data);
         if(l!=1)
@@ -277,640 +273,46 @@ int main(int argc, char ** argv)
     }
     // end of reading of the dst-file
 
-    if(argc>5)  strcpy(filename1,argv[5]);
-    else
-    {   printf("\n Input name for the text result file (dat) ");
-        scanf("%s",filename1);
-    }
-
-    if(argc>6)  iRealizationNumber=atoi(argv[6]);
-    else
-    {   printf("\n Input number of samples/orientations ");
-        scanf("%i",&iRealizationNumber);
-    }
-
-    iOrientationMode=-1;
-    while(iOrientationMode!=0&&iOrientationMode!=1)
-    if(argc>7)  iOrientationMode=atoi(argv[7]);
-    else
-    {   printf("\n Please, choose the orientation mode ");
-        printf("\n 0 - no averaging ");
-        printf("\n 1 - Monte-Carlo averaging (random orientations) ");
-        scanf("%i",&iOrientationMode);
-    }
+    iRealizationNumber=opt.samples;
+    iOrientationMode=opt.orientation;
 
     if(iOrientationMode==0)
-    {   if(argc>8)  psi=atof(argv[8]);
-        else
-        {   printf("\n Input the angle psi for the first rotation around axis Z (in degree) ");
-            scanf("%f",&psi);
-        }
-        psi=psi*PI/180.;
-
-        if(argc>9)  iota=atof(argv[9]);
-        else
-        {   printf("\n Input the angle iota for the second rotation around axis Y (in degree) ");
-            scanf("%f",&iota);
-        }
-        iota=iota*PI/180.;
-
-        if(argc>10)  kappa=atof(argv[10]);
-        else
-        {   printf("\n Input the angle kappa for the third rotation around axis X (in degree) ");
-            scanf("%f",&kappa);
-        }
-        kappa=kappa*PI/180.;
-
-        if(argc>11) iNoScPl=atoi(argv[11]);
-        else
-        {   printf("\n Input number of the scattering planes ");
-            scanf("%d",&iNoScPl);
-        }
-
-        iFlag=4;
+    {   psi=(real)opt.psi*PI/180.;
+        iota=(real)opt.iota*PI/180.;
+        kappa=(real)opt.kappa*PI/180.;
     }
 
-    if(iOrientationMode==1)
-    {   if(argc>8)  iNoScPl=atoi(argv[8]);
-        else
-        {   printf("\n Input number of the scattering planes ");
-            scanf("%d",&iNoScPl);
-        }
-
-        iFlag=1;
-    }
-
-    iChoiceStructure=0;
-    while(iChoiceStructure!=1&&iChoiceStructure!=2&&iChoiceStructure!=3&&
-          iChoiceStructure!=4&&iChoiceStructure!=5&&iChoiceStructure!=6&&
-          iChoiceStructure!=7&&iChoiceStructure!=8&&iChoiceStructure!=9&&
-          iChoiceStructure!=10&&iChoiceStructure!=11&&iChoiceStructure!=12&&
-          iChoiceStructure!=13&&iChoiceStructure!=14)
-    if(argc>(8+iFlag))  iChoiceStructure=atoi(argv[(8+iFlag)]);
-    else
-    {   printf("\n Please, choose the morphology type of target ");
-        printf("\n Input  1 for sphere ");
-        printf("\n Input  2 for ellipsoid ");
-        printf("\n Input  3 for parallelepiped ");
-        printf("\n Input  4 for random particle in spherical matrix ");
-        printf("\n Input  5 for random particle in ellipsoidal matrix ");
-        printf("\n Input  6 for random antrax-like particle ");
-        printf("\n Input  7 for random hedgehog-like particle ");
-        printf("\n Input  8 for random dead antrax-like particle ");
-        printf("\n Input  9 for random particle in parallelepiped matrix ");
-        printf("\n Input 10 for random nibble particle in ellipsoidal matrix ");
-        printf("\n Input 11 for particle from file ");
-        printf("\n Input 12 for two spheres in contact (along X-axis) ");
-        printf("\n Input 13 for hierarchical random particle in ellipsoidal matrix ");
-        printf("\n Input 14 for sphere with arbitrary radius\n");
-        scanf("%i",&iChoiceStructure);
-    }
-
-    if(iChoiceStructure!=4&&iChoiceStructure!=5&&iChoiceStructure!=9
-       &&iChoiceStructure!=10&&iChoiceStructure!=11&&iChoiceStructure!=12)
-    {   iSeeds=(int *)malloc(sizeof(int));
-        cRefrIndex=(cplx *)malloc(sizeof(cplx));
-        if(cRefrIndex==NULL||iSeeds==NULL)
-        {   printf("\n No enough memory for array cRefrIndex! ");
-            exit(1);
-        }
-        iSorts=1;
-    }
-
-    if(iChoiceStructure==1)
-    {   if(argc>(9+iFlag)) cRefrIndex[0].r=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the real part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].r);
-        }
-
-        if(argc>(10+iFlag)) cRefrIndex[0].i=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input the imaginary part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].i);
-        }
-
-        iFlag+=2;
-    }
-
-    if(iChoiceStructure==2)
-    {   if(argc>(9+iFlag))  b_a=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid b/a ");
-            scanf("%f",&b_a);
-        }
-
-        if(argc>(10+iFlag)) c_a=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid c/a ");
-            scanf("%f",&c_a);
-        }
-
-        if(argc>(11+iFlag)) cRefrIndex[0].r=atof(argv[(11+iFlag)]);
-        else
-        {   printf("\n Input the real part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].r);
-        }
-
-        if(argc>(12+iFlag)) cRefrIndex[0].i=atof(argv[(12+iFlag)]);
-        else
-        {   printf("\n Input the imaginary part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].i);
-        }
-
-        iFlag+=4;
-    }
-
-    if(iChoiceStructure==3)
-    {   if(argc>(9+iFlag))  b_a=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the parallelepiped b/a ");
-            scanf("%f",&b_a);
-        }
-
-        if(argc>(10+iFlag)) c_a=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the parallelepiped c/a ");
-            scanf("%f",&c_a);
-        }
-
-        if(argc>(11+iFlag)) cRefrIndex[0].r=atof(argv[(11+iFlag)]);
-        else
-        {   printf("\n Input the real part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].r);
-        }
-
-        if(argc>(12+iFlag)) cRefrIndex[0].i=atof(argv[(12+iFlag)]);
-        else
-        {   printf("\n Input the imaginary part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].i);
-        }
-
-        iFlag+=4;
-    }
-
-    if(iChoiceStructure==4)
-    {   if(argc>(9+iFlag))  iSorts=atoi(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input number of the constituent materials ");
-            scanf("%i",&iSorts);
-        }
-
-        iSeeds=(int *)malloc(iSorts*sizeof(int));
-        cRefrIndex=(cplx *)malloc(iSorts*sizeof(cplx));
-        if(iSeeds==NULL||cRefrIndex==NULL)
-        {   printf("\n No enough memory for array iSeeds or cRefrIndex! ");
-            exit(1);
-        }
-
-        for(i=0;i<iSorts;i++)
-        {   if(argc>(10+iFlag+3*i)) iSeeds[i]=atoi(argv[(10+iFlag+3*i)]);
-            else
-            {   printf("\n Input number of %d material seeds ",(i+1));
-                scanf("%i",&iSeeds[i]);
-            }
-
-            if(argc>(10+iFlag+3*i+1))   cRefrIndex[i].r=atof(argv[(10+iFlag+3*i+1)]);
-            else
-            {   printf("\n Input the real part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].r);
-            }
-
-            if(argc>(10+iFlag+3*i+2))   cRefrIndex[i].i=atof(argv[(10+iFlag+3*i+2)]);
-            else
-            {   printf("\n Input the imaginary part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].i);
-            }
-        }
-
-        iFlag+=(1+3*iSorts);
-    }
-
-    if(iChoiceStructure==5)
-    {   if(argc>(9+iFlag))  b_a=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid b/a ");
-            scanf("%f",&b_a);
-        }
-
-        if(argc>(10+iFlag))  c_a=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid c/a ");
-            scanf("%f",&c_a);
-        }
-
-        if(argc>(11+iFlag))  iSorts=atoi(argv[(11+iFlag)]);
-        else
-        {   printf("\n Input number of the constituent materials ");
-            scanf("%i",&iSorts);
-        }
-
-        iSeeds=(int *)malloc(iSorts*sizeof(int));
-        cRefrIndex=(cplx *)malloc(iSorts*sizeof(cplx));
-        if(iSeeds==NULL||cRefrIndex==NULL)
-        {   printf("\n No enough memory for array iSeeds or cRefrIndex! ");
-            exit(1);
-        }
-
-        for(i=0;i<iSorts;i++)
-        {   if(argc>(12+iFlag+3*i)) iSeeds[i]=atoi(argv[(12+iFlag+3*i)]);
-            else
-            {   printf("\n Input number of %d material seeds ",(i+1));
-                scanf("%i",&iSeeds[i]);
-            }
-
-            if(argc>(12+iFlag+3*i+1))   cRefrIndex[i].r=atof(argv[(12+iFlag+3*i+1)]);
-            else
-            {   printf("\n Input the real part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].r);
-            }
-
-            if(argc>(12+iFlag+3*i+2))   cRefrIndex[i].i=atof(argv[(12+iFlag+3*i+2)]);
-            else
-            {   printf("\n Input the imaginary part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].i);
-            }
-        }
-
-        iFlag+=3*(1+iSorts);
-    }
-
-    if(iChoiceStructure==6||iChoiceStructure==7||iChoiceStructure==8)
-    {   if(argc>(9+iFlag))  rho=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the volume density of the target particle ");
-            scanf("%f",&rho);
-        }
-
-        if(argc>(10+iFlag)) radius_worm=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input radius of the monomer (in cells)");
-            scanf("%f",&radius_worm);
-        }
-
-        if(argc>(11+iFlag)) lr_worm=atof(argv[(11+iFlag)]);
-        else
-        {   printf("\n Input the ratio length over radius for the monomer ");
-            scanf("%f",&lr_worm);
-        }
-
-        if(argc>(12+iFlag)) cRefrIndex[0].r=atof(argv[(12+iFlag)]);
-        else
-        {   printf("\n Input the real part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].r);
-        }
-
-        if(argc>(13+iFlag)) cRefrIndex[0].i=atof(argv[(13+iFlag)]);
-        else
-        {   printf("\n Input the imaginary part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].i);
-        }
-
-        iFlag+=5;
-    }
-
-    if(iChoiceStructure==9)
-    {   if(argc>(9+iFlag))  b_a=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid b/a ");
-            scanf("%f",&b_a);
-        }
-
-        if(argc>(10+iFlag))  c_a=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid c/a ");
-            scanf("%f",&c_a);
-        }
-
-        if(argc>(11+iFlag))  iSorts=atoi(argv[(11+iFlag)]);
-        else
-        {   printf("\n Input number of the constituent materials ");
-            scanf("%i",&iSorts);
-        }
-
-        iSeeds=(int *)malloc(iSorts*sizeof(int));
-        cRefrIndex=(cplx *)malloc(iSorts*sizeof(cplx));
-        if(iSeeds==NULL||cRefrIndex==NULL)
-        {   printf("\n No enough memory for array iSeeds or cRefrIndex! ");
-            exit(1);
-        }
-
-        for(i=0;i<iSorts;i++)
-        {   if(argc>(12+iFlag+3*i)) iSeeds[i]=atoi(argv[(12+iFlag+3*i)]);
-            else
-            {   printf("\n Input number of %d material seeds ",(i+1));
-                scanf("%i",&iSeeds[i]);
-            }
-
-            if(argc>(12+iFlag+3*i+1))   cRefrIndex[i].r=atof(argv[(12+iFlag+3*i+1)]);
-            else
-            {   printf("\n Input the real part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].r);
-            }
-
-            if(argc>(12+iFlag+3*i+2))   cRefrIndex[i].i=atof(argv[(12+iFlag+3*i+2)]);
-            else
-            {   printf("\n Input the imaginary part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].i);
-            }
-        }
-
-        iFlag+=3*(1+iSorts);
-    }
-
-    if(iChoiceStructure==10)
-    {   if(argc>(9+iFlag))  b_a=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid b/a ");
-            scanf("%f",&b_a);
-        }
-
-        if(argc>(10+iFlag)) c_a=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid c/a ");
-            scanf("%f",&c_a);
-        }
-
-        if(argc>(11+iFlag)) iSorts=atoi(argv[(11+iFlag)]);
-        else
-        {   printf("\n Input number of the constituent materials ");
-            scanf("%i",&iSorts);
-        }
-
-        if(argc>(12+iFlag)) iBites=atoi(argv[(12+iFlag)]);
-        else
-        {   printf("\n Input number of the outer ceed cells for empty space ");
-            scanf("%i",&iBites);
-        }
-
-        if(argc>(13+iFlag)) rDepth=atof(argv[(13+iFlag)]);
-        else
-        {   printf("\n Input depth of the surface layer with these ceed cells (in radii of the initial matrix)" );
-            scanf("%f",&rDepth);
-        }
-
-        iSeeds=(int *)malloc(iSorts*sizeof(int));
-        cRefrIndex=(cplx *)malloc(iSorts*sizeof(cplx));
-        if(iSeeds==NULL||cRefrIndex==NULL)
-        {   printf("\n No enough memory for array iSeeds or cRefrIndex! ");
-            exit(1);
-        }
-
-        for(i=0;i<iSorts;i++)
-        {   if(argc>(14+iFlag+3*i)) iSeeds[i]=atoi(argv[(14+iFlag+3*i)]);
-            else
-            {   printf("\n Input number of %d material seeds ",(i+1));
-                scanf("%i",&iSeeds[i]);
-            }
-
-            if(argc>(14+iFlag+3*i+1))   cRefrIndex[i].r=atof(argv[(14+iFlag+3*i+1)]);
-            else
-            {   printf("\n Input the real part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].r);
-            }
-
-            if(argc>(14+iFlag+3*i+2))   cRefrIndex[i].i=atof(argv[(14+iFlag+3*i+2)]);
-            else
-            {   printf("\n Input the imaginary part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].i);
-            }
-        }
-
-        iFlag+=(5+3*iSorts);
-    }
-
-    if(iChoiceStructure==11)
-    {   if(argc>(9+iFlag))  strcpy(filename2,argv[(9+iFlag)]);
-        else
-        {   printf("\n Input name of the file containing data on the target ");
-            scanf("%s",filename2);
-        }
-
-        if(argc>(10+iFlag)) iSorts=atoi(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input number of the constituent materials ");
-            scanf("%i",&iSorts);
-        }
-
-        cRefrIndex=(cplx *)malloc(iSorts*sizeof(cplx));
-        if(cRefrIndex==NULL)
-        {   printf("\n No enough memory for array cRefrIndex! ");
-            exit(1);
-        }
-
-        for(i=0;i<iSorts;i++)
-        {   if(argc>(11+iFlag+2*i))     cRefrIndex[i].r=atof(argv[(11+iFlag+2*i)]);
-            else
-            {   printf("\n Input the real part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].r);
-            }
-
-            if(argc>(11+iFlag+2*i+1))   cRefrIndex[i].i=atof(argv[(11+iFlag+2*i+1)]);
-            else
-            {   printf("\n Input the imaginary part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].i);
-            }
-        }
-
-        iFlag+=(2+2*iSorts);
-    }
-
-    if(iChoiceStructure==12)
-    {   if(argc>(9+iFlag))  R1_R2=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input ratio of the first sphere radius over the second sphere radius ");
-            scanf("%f",&R1_R2);
-        }
-
-        iSorts=2;
-        iSeeds=(int *)malloc(iSorts*sizeof(int));
-        cRefrIndex=(cplx *)malloc(iSorts*sizeof(cplx));
-        if(iSeeds==NULL||cRefrIndex==NULL)
-        {   printf("\n No enough memory for array iSeeds or cRefrIndex! ");
-            exit(1);
-        }
-
-        for(i=0;i<iSorts;i++)
-        {   if(argc>(10+iFlag+2*i))     cRefrIndex[i].r=atof(argv[(10+iFlag+2*i)]);
-            else
-            {   printf("\n Input the real part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].r);
-            }
-
-            if(argc>(10+iFlag+2*i+1))   cRefrIndex[i].i=atof(argv[(10+iFlag+2*i+1)]);
-            else
-            {   printf("\n Input the imaginary part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].i);
-            }
-        }
-
-        iFlag+=5;
-    }
-
-    if(iChoiceStructure==13)
-    {   if(argc>(9+iFlag))  b_a=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid b/a ");
-            scanf("%f",&b_a);
-        }
-
-        if(argc>(10+iFlag)) c_a=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input the aspect ratio of the ellipsoid c/a ");
-            scanf("%f",&c_a);
-        }
-
-        if(argc>(11+iFlag)) iHierarchicalLevels=atoi(argv[(11+iFlag)]);
-        else
-        {   printf("\n Input number of hierarchical levels ");
-            scanf("%i",&iHierarchicalLevels);
-        }
-
-        if(argc>(12+iFlag)) iSorts=atoi(argv[(12+iFlag)]);
-        else
-        {   printf("\n Input number of the constituent materials");
-            printf("\n Note: in the current version of the program it should be 2 always;");
-            printf("\n whereas, the first material should not be the 'free space'! ");
-            scanf("%i",&iSorts);
-        }
-
-        iSeeds=(int *)malloc(iSorts*sizeof(int));
-        cRefrIndex=(cplx *)malloc(iSorts*sizeof(cplx));
-        if(iSeeds==NULL||cRefrIndex==NULL)
-        {   printf("\n No enough memory for array iSeeds or cRefrIndex! ");
-            exit(1);
-        }
-
-        for(i=0;i<iSorts;i++)
-        {   if(argc>(13+iFlag+3*i))     iSeeds[i]=atoi(argv[(13+iFlag+3*i)]);
-            else
-            {   printf("\n Input number of %d material seeds ",(i+1));
-                scanf("%i",&iSeeds[i]);
-            }
-
-            if(argc>(13+iFlag+3*i+1))   cRefrIndex[i].r=atof(argv[(13+iFlag+3*i+1)]);
-            else
-            {   printf("\n Input the real part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].r);
-            }
-
-            if(argc>(13+iFlag+3*i+2))   cRefrIndex[i].i=atof(argv[(13+iFlag+3*i+2)]);
-            else
-            {   printf("\n Input the imaginary part of refractive index of %d material ",(i+1));
-                scanf("%f",&cRefrIndex[i].i);
-            }
-        }
-
-        iFlag+=(4+3*iSorts);
-    }
-
-    if(iChoiceStructure==14)
-    {   if(argc>(9+iFlag)) cRefrIndex[0].r=atof(argv[(9+iFlag)]);
-        else
-        {   printf("\n Input the real part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].r);
-        }
-
-        if(argc>(10+iFlag)) cRefrIndex[0].i=atof(argv[(10+iFlag)]);
-        else
-        {   printf("\n Input the imaginary part of refractive index of the constituent material ");
-            scanf("%f",&cRefrIndex[0].i);
-        }
-
-        if(argc>(11+iFlag)) rho=atof(argv[(11+iFlag)]);
-        else
-        {   printf("\n Input the density rho (the part of the initial spherical volume filled by dipoles) ");
-            scanf("%f",&rho);
-        }
-
-        iFlag+=3;
-    }
-
-    if(argc>(9+iFlag))  i_max=atoi(argv[(9+iFlag)]);
-    else
-    {   printf("\n Input the maximum number of cells along the axis X (shoulf be 2^integer) ");
-        scanf("%i",&i_max);
-    }
-
-    if(argc>(10+iFlag)) j_max=atoi(argv[(10+iFlag)]);
-    else
-    {   printf("\n Input the maximum number of cells along the axis Y (shoulf be 2^integer) ");
-        scanf("%i",&j_max);
-    }
-
-    if(argc>(11+iFlag)) l_max=atoi(argv[(11+iFlag)]);
-    else
-    {   printf("\n Input the maximum number of cells along the axis Z (shoulf be 2^integer) ");
-        scanf("%i",&l_max);
-    }
-
-    if(argc>(12+iFlag))  x=atof(argv[(12+iFlag)]);
-    else
-    {   printf("\n Input the size parameter x of the target (in respect to the side X) ");
-        scanf("%f",&x);
-    }
-
-    iChoicePolarizability=0;
-    while(iChoicePolarizability!=1&&iChoicePolarizability!=2&&iChoicePolarizability!=3
-        &&iChoicePolarizability!=4&&iChoicePolarizability!=5)
-    {   if(argc>(13+iFlag))  iChoicePolarizability=atoi(argv[(13+iFlag)]);
-        else
-        {   printf("\n Please, choose the relation between polarizability and refractive index.");
-            printf("\n Input 1 for Clausius-Mossotti");
-            printf("\n Input 2 for Clausius-Mossotti plus radiative reaction (by Draine)");
-            printf("\n Input 3 for Clausius-Mossotti plus nonradiative reaction (by Goedecke&O'Brien)");
-            printf("\n Input 4 for Isotropized Lattice Dispersion Relation (by Draine)");
-            printf("\n Input 5 for Lattice Dispersion Relation (by Draine)");
-            printf("\n Note: Do not choose 4 if the wave-vector of incident field is parallel");
-            printf("\n to one of the coordinate axes, as it reduces the accuracy of computations!\n");
-            scanf("%i",&iChoicePolarizability);
-        }
-    }
-
-    if(argc>(14+iFlag)) Error_max=atof(argv[(14+iFlag)]);
-    else
-    {   printf("\n Input the parameter Error_max (it specifies the termination of the iterative process) ");
-        scanf("%f",&Error_max);
-    }
-
-    if(argc>(15+iFlag)) Max_Step=atoi(argv[(15+iFlag)]);
-    else
-    {   printf("\n Input the maximum number of steps in the iterative process ");
-        scanf("%i",&Max_Step);
-    }
-
-    iMode_FFT=-1;
-    while(iMode_FFT!=0&&iMode_FFT!=1)
-    if(argc>(16+iFlag)) iMode_FFT=atoi(argv[(16+iFlag)]);
-    else
-    {   printf("\n Please, choose the algorithm of the FFT ");
-        printf("\n Input 0 for the Cooley-Tukey method ");
-        printf("\n Input 1 for the Rader-Brenner method ");
-        scanf("%i",&iMode_FFT);
-    }
-
-    iMode_SolutionMethod=-1;
-    while(iMode_SolutionMethod!=0&&iMode_SolutionMethod!=1&&iMode_SolutionMethod!=2
-          &&iMode_SolutionMethod!=3)
-    if(argc>(17+iFlag)) iMode_SolutionMethod=atoi(argv[(17+iFlag)]);
-    else
-    {   printf("\n Please, choose the solution method of system of linear algebraic equations");
-        printf("\n Input 0 for Conjugate Gradient Method (by Voevodin)");
-        printf("\n Input 1 for AA* Minimal Iterations Method (by Voevodin)");
-        printf("\n Input 2 for BiConjugate Gradient Stabilized Method");
-        printf("\n Input 3 for Simple Iteration Method\n");
-        scanf("%i",&iMode_SolutionMethod);
-    }
-
-    if(iMode_SolutionMethod==3)
-    {   if(argc>(18+iFlag)) rTau=atof(argv[(18+iFlag)]);
-        else
-        {   printf("\n Input the weight factor for Simple Iteration Method ");
-            scanf("%f",&rTau);
-        }
-
-        iFlag+=1;
-    }
+    iNoScPl=opt.planes;
+
+    iChoiceStructure=opt.target;
+
+    iSorts=(int)opt.materials.size();
+    cRefrIndex=opt.materials.empty()? NULL : &opt.materials[0];
+    iSeeds=opt.seeds.empty()? NULL : &opt.seeds[0];
+
+    b_a=(real)opt.aspect_b;
+    c_a=(real)opt.aspect_c;
+    R1_R2=(real)opt.radius_ratio;
+    iHierarchicalLevels=opt.hierarchical_levels;
+    iBites=opt.bites;
+    rDepth=(real)opt.depth;
+    rho=(real)opt.packing;
+    radius_worm=(real)opt.monomer_radius;
+    lr_worm=(real)opt.monomer_length_ratio;
+
+    if(iChoiceStructure==11)    strcpy(filename2,opt.shape_file.c_str());
+
+    i_max=opt.grid[0];
+    j_max=opt.grid[1];
+    l_max=opt.grid[2];
+
+    x=(real)opt.size_parameter;
+    iChoicePolarizability=opt.polarizability;
+    Error_max=(real)opt.tolerance;
+    Max_Step=opt.max_steps;
+    iMode_FFT=opt.fft_mode;
+    iMode_SolutionMethod=opt.solver;
+    rTau=(real)opt.tau;
 
 
     kd=2.*x/(real)i_max;
@@ -1286,7 +688,7 @@ int main(int argc, char ** argv)
 
     iFirstRealization=iRealizationCounter;
     iTasks=iRealizationNumber-iFirstRealization;
-    iWorkers=worker_count(i_max,j_max,l_max);
+    iWorkers=worker_count(i_max,j_max,l_max,opt.threads);
 
 /* No point in allocating more workspaces than there is work to do. */
 
@@ -1618,7 +1020,7 @@ int main(int argc, char ** argv)
 /******************************* Memory free ********************************/
 /****************************************************************************/
 
-    free(iSeeds);   free(cRefrIndex);   free(cListMaterials);   free(iListMV);
+    free(cListMaterials);   free(iListMV);
     free(vNormal);  free(vNormal_ini);
 
     for(m=0;m<iNoScPl;m++)

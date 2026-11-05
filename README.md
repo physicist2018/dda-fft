@@ -52,18 +52,23 @@ the original code; with the new kernel it agrees to `float` precision — about
 
 ## Building
 
-Requires a C++17 compiler: GCC 7+ or clang 5+. No external libraries.
+Requires a C++17 compiler: GCC 7+ or clang 5+. The command-line parser is the
+vendored argtable3 (**BSD-3-Clause**, `third_party/argtable3/`), so there are
+no external dependencies to install.
 
 ```sh
-sh compile          # g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
+sh compile
 ```
 
-The `compile` script is a plain two-line wrapper; on a system where `g++` is a
-different compiler it can be replaced by any equivalent command, e.g.
+The `compile` script builds argtable3 as C and links it into the program:
 
 ```sh
-g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
+cc -O2 -std=c11 -c third_party/argtable3/argtable3.c -o third_party/argtable3/argtable3.o
+g++ -O3 -std=c++17 -pthread *.cpp third_party/argtable3/argtable3.o -o dda_fft.out
 ```
+
+On a system where `g++` is a different compiler the second command can be
+replaced by any equivalent one.
 
 ### Git hooks
 
@@ -82,38 +87,59 @@ To bypass the check for a single commit (not recommended):
 
 ## Running
 
-### Positional arguments
+### Options
 
-Every argument may be omitted; the program then asks for it interactively, so
-an interactive run is simply `./dda_fft.out`. For scripting, the arguments are
-positional. Their meaning is:
+The program is configured with named options (parsed with argtable3).
+`./dda_fft.out --help` prints the same list. Everything that is missing is
+asked for interactively, so a bare `./dda_fft.out` still walks through the
+whole questionnaire; `--interactive` forces that when some options are given.
 
-| # | Argument | Notes |
+| Option | Meaning | Default |
 |---|---|---|
-| 1 | `theta_inf` | bottom limit of the phase-angle range, degrees |
-| 2 | `theta_up` | upper limit of the phase-angle range, degrees |
-| 3 | `theta_step` | phase-angle increment, degrees |
-| 4 | `dst` file | binary state file (running averages; see below) |
-| 5 | `dat` file | text result file |
-| 6 | number of samples | number of realizations / orientations to average over |
-| 7 | orientation mode | `0` — fixed orientation, `1` — Monte-Carlo random orientations |
-| 8 | *(mode 0)* `psi` | first rotation, degrees |
-| 9 | *(mode 0)* `iota` | second rotation, degrees |
-| 10 | *(mode 0)* `kappa` | third rotation, degrees |
-| 11 | *(mode 0)* number of scattering planes | |
-| 8 | *(mode 1)* number of scattering planes | |
-| — | target type | see the table below; this shifts the remaining arguments |
-| — | target parameters | depend on the target type (e.g. `m′ m″` for a sphere) |
-| — | `i_max` `j_max` `l_max` | lattice dimensions, powers of two |
-| — | `x` | size parameter of the target |
-| — | polarizability model | `1`…`5`, see below |
-| — | `Error_max` | convergence threshold that stops the iteration |
-| — | `Max_Step` | maximum number of iterations |
-| — | FFT method | `0` — Cooley–Tukey (**recommended**), `1` — Rader–Brenner |
-| — | solver | `0`…`3`, see below |
-| — | `rTau` | only for solver `3`, the weight factor |
+| `-h, --help` | print the options and exit | |
+| `-V, --version` | print the version and exit | |
+| `-i, --interactive` | ask for every value that is not given | off |
+| `-o, --output <file>` | text result file | `out.dat` |
+| `-D, --state <file>` | binary state file, resumed if it exists | `out.dst` |
+| `--restart` | delete the state file and start from scratch | off |
+| `-n, --samples <N>` | number of samples / orientations | `1` |
+| `-a, --theta-min <deg>` | bottom limit of the phase angles | `0` |
+| `-b, --theta-max <deg>` | upper limit of the phase angles | `180` |
+| `-s, --theta-step <deg>` | phase-angle increment | `10` |
+| `-O, --orientation <mode>` | `fixed` or `mc` | `fixed` |
+| `--psi --iota --kappa <deg>` | rotations, fixed orientation only | `0` |
+| `-p, --planes <N>` | number of scattering planes | `1` |
+| `-t, --target <name\|1..14>` | target type, see the table below | required |
+| `-g, --grid <i> [j l]` | lattice dimensions, powers of two; one value means a cube | required |
+| `-x, --size-parameter <x>` | size parameter of the target | required |
+| `-m, --material <mre> <mi>` | refractive index of one material, repeat for a mixture | required |
+| `--seeds <s>...` | random seeds, one per material | random |
+| `--aspect <b/a> <c/a>` | aspect ratios (targets 2, 3, 5, 9, 10, 13) | |
+| `--radius-ratio <R1/R2>` | radius ratio (target 12) | |
+| `--levels <N>` | number of hierarchical levels (target 13) | |
+| `--bites <N>`, `--depth <r>` | surface layer (target 10) | |
+| `--packing <rho>` | volume density (targets 6, 7, 8, 14) | |
+| `--monomer-radius <r>`, `--monomer-length-ratio <l/r>` | monomer shape (targets 6, 7, 8) | |
+| `-f, --shape-file <file>` | file with the target shape (target 11) | |
+| `-P, --polarizability <model>` | `1`…`5` or `cm,cmrr,cmnr,ildr,ldr` | `1` |
+| `-e, --tolerance <err>` | convergence threshold `Error_max` | `1e-3` |
+| `-S, --max-steps <N>` | maximum number of iterations | `20` |
+| `-F, --fft <method>` | `0`/`ct` Cooley–Tukey, `1`/`rb` Rader–Brenner | `0` |
+| `-M, --solver <method>` | `0`…`3` or `cg,aa,bicgstab,simple` | `0` |
+| `--tau <factor>` | weight factor, required by solver `3` | |
+| `-j, --threads <N>` | worker threads, `0` = auto | `0` |
+| `--seed <u64>` | random seed for reproducible runs | random |
 
-The number of phase angles is `(theta_up − theta_inf)/theta_step + 1`.
+The number of phase angles is `(theta_max − theta_min)/theta_step + 1`.
+Grid dimensions must be powers of two; an invalid size is rejected instead of
+silently reading past the FFT buffers.
+
+List options accept both forms, so these are equivalent:
+
+```sh
+./dda_fft.out --material 1.5 0.01 --grid 64 64 64
+./dda_fft.out --material 1.5,0.01 --grid 64,64,64
+```
 
 ### Example: a sphere, 64³ lattice
 
@@ -121,16 +147,23 @@ The number of phase angles is `(theta_up − theta_inf)/theta_step + 1`.
 # phase angles 0..180 in steps of 10 deg, fixed orientation, 1 sample,
 # one scattering plane, sphere, m = 1.5 + 0.01i, 64 x 64 x 64, x = 20,
 # Clausius-Mossotti, Error_max = 1e-3, 20 steps, Cooley-Tukey, solver 0
-./dda_fft.out 0 180 10 out.dst out.dat 1 0 0 0 0 1 1 1.5 0.01 \
-              64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --target sphere --material 1.5 0.01 --grid 64 --size-parameter 20
 ```
 
-For a Monte-Carlo average over 100 random orientations, replace the sample
-count and the orientation mode, and give the number of scattering planes:
+For a Monte-Carlo average over 100 random orientations, ask for the averaging
+mode and give the number of scattering planes:
 
 ```sh
-./dda_fft.out 0 180 10 out.dst out.dat 100 1 1 1 1.5 0.01 \
-              64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --samples 100 --orientation mc --planes 1 \
+              --target sphere --material 1.5 0.01 --grid 64 --size-parameter 20
+```
+
+A mixture is given by repeating `--material`; the random targets also need one
+`--seeds` value per material:
+
+```sh
+./dda_fft.out --target random-sphere --material 1.5 0.01 --material 1.33 0.0 \
+              --seeds 1234 5678 --grid 64 --size-parameter 20
 ```
 
 ### Output
@@ -161,8 +194,11 @@ threads. The default is one worker per CPU core, capped by the number of
 samples and by the memory the private workspaces need. To set it explicitly:
 
 ```sh
-DDA_THREADS=4 ./dda_fft.out …
+./dda_fft.out --threads 4 …
 ```
+
+`DDA_THREADS` in the environment is still honoured when `--threads` is not
+given.
 
 **The best number of workers depends on the lattice size**, because the limit
 is memory bandwidth, not cores: on an 8-core Apple M1 the measured optimum was
@@ -235,6 +271,12 @@ polarizability is computed per material.
   `Result of the last iteration has been replaced with the most optimal!`.
 * `Max_Step` bounds the iteration count; a run converges when the discrepancy
   drops below `Error_max`. On hard targets it may require several hundred steps.
+* **Particle generation can hang** for the random worm-like targets (6, 7, 8) and
+  for the hierarchical target (13) when the requested geometry does not fit: the
+  worm placement and the seed-cell search of `particle.cpp` retry without an
+  attempt limit. Pick `--packing`, `--monomer-*` and the lattice size so that the
+  particle fits, and use an external timeout in scripts. See section 7.6 of
+  [REPORT.md](REPORT.md).
 * Memory budget: about **0.34 kB per lattice cell for each worker**, plus
   about 0.38 kB per cell for the interaction matrix, which is shared by all
   workers. A single worker on a 128³ lattice therefore needs roughly 1.4 GB.
@@ -247,7 +289,8 @@ polarizability is computed per material.
 
 | File | Contents |
 |---|---|
-| `main.cpp` | input parsing, sample loop, worker pool, output |
+| `main.cpp` | sample loop, worker pool, output |
+| `options.cpp` | command-line parsing (argtable3), validation, interactive prompts |
 | `dda_func.cpp` | DDA solver, convolutions, scalar products, far field |
 | `fft_func.cpp` | three-dimensional FFT |
 | `fft_kernel.hpp` | mixed-radix 4/8 in-place 1-D FFT kernel used by `fft_func.cpp` |
@@ -255,8 +298,9 @@ polarizability is computed per material.
 | `complex.cpp`, `cvector.cpp` | complex arithmetic, 3-vectors and 3×3 matrices |
 | `mmuller.cpp` | Jones and Mueller matrices |
 | `randomize.cpp` | random number generation |
-| `function.hpp`, `cplx.h`, `cvector.hpp`, `complex.hpp`, `mmuller.hpp`, `randomize.hpp` | declarations |
+| `function.hpp`, `cplx.h`, `cvector.hpp`, `complex.hpp`, `mmuller.hpp`, `randomize.hpp`, `options.hpp` | declarations |
 | `compile` | build script |
+| `third_party/argtable3/` | vendored argtable3 v3.3.1 (BSD-3-Clause), the CLI parser |
 | `bench/` | standalone harness for the 1-D kernel: delta tests, accuracy, A/B timing |
 | `REPORT.md` | optimization report: profiling, changes, measurements, rejected ideas |
 
@@ -317,18 +361,23 @@ polarizability is computed per material.
 
 ## Сборка
 
-Требуется компилятор с C++17: GCC 7+ или clang 5+. Внешние библиотеки не нужны.
+Требуется компилятор с C++17: GCC 7+ или clang 5+. Разбор командной строки —
+вендоренная argtable3 (**BSD-3-Clause**, `third_party/argtable3/`), так что
+внешних зависимостей устанавливать не нужно.
 
 ```sh
-sh compile          # g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
+sh compile
 ```
 
-Скрипт `compile` — обёртка из двух строк; на системе, где `g++` означает другой
-компилятор, его можно заменить эквивалентной командой, например
+Скрипт `compile` собирает argtable3 как C и линкует её с программой:
 
 ```sh
-g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
+cc -O2 -std=c11 -c third_party/argtable3/argtable3.c -o third_party/argtable3/argtable3.o
+g++ -O3 -std=c++17 -pthread *.cpp third_party/argtable3/argtable3.o -o dda_fft.out
 ```
+
+На системе, где `g++` означает другой компилятор, вторую команду можно заменить
+эквивалентной.
 
 ### Git-хуки
 
@@ -348,38 +397,59 @@ git config core.hooksPath .githooks
 
 ## Запуск
 
-### Позиционные аргументы
+### Опции
 
-Любой аргумент можно опустить — тогда программа спросит его в интерактивном
-режиме, поэтому интерактивный запуск сводится к `./dda_fft.out`. Для скриптов
-аргументы позиционные; их смысл:
+Программа настраивается именованными опциями (разбор — argtable3). Тот же
+список печатает `./dda_fft.out --help`. Всё, что не задано, спрашивается в
+интерактивном режиме, поэтому запуск без аргументов по-прежнему проходит весь
+опросник; `--interactive` включает его принудительно, если часть опций задана.
 
-| № | Аргумент | Примечание |
+| Опция | Смысл | По умолчанию |
 |---|---|---|
-| 1 | `theta_inf` | нижняя граница диапазона фазовых углов, градусы |
-| 2 | `theta_up` | верхняя граница диапазона фазовых углов, градусы |
-| 3 | `theta_step` | шаг по фазовому углу, градусы |
-| 4 | файл `dst` | двоичный файл состояния (текущие средние, см. ниже) |
-| 5 | файл `dat` | текстовый файл результата |
-| 6 | число образцов | сколько реализаций / ориентаций усреднять |
-| 7 | режим ориентации | `0` — фиксированная ориентация, `1` — случайные ориентации (Монте-Карло) |
-| 8 | *(режим 0)* `psi` | первый поворот, градусы |
-| 9 | *(режим 0)* `iota` | второй поворот, градусы |
-| 10 | *(режим 0)* `kappa` | третий поворот, градусы |
-| 11 | *(режим 0)* число плоскостей рассеяния | |
-| 8 | *(режим 1)* число плоскостей рассеяния | |
-| — | тип частицы | см. таблицу ниже; он сдвигает все последующие аргументы |
-| — | параметры частицы | зависят от типа (например `m′ m″` для сферы) |
-| — | `i_max` `j_max` `l_max` | размеры решётки, степени двойки |
-| — | `x` | параметр размера частицы |
-| — | модель поляризуемости | `1`…`5`, см. ниже |
-| — | `Error_max` | порог невязки, при котором итерации прекращаются |
-| — | `Max_Step` | максимальное число итераций |
-| — | метод FFT | `0` — Кули–Тьюки (**рекомендуется**), `1` — Радера–Бреннера |
-| — | метод решения | `0`…`3`, см. ниже |
-| — | `rTau` | только для метода `3` — весовой множитель |
+| `-h, --help` | напечатать опции и выйти | |
+| `-V, --version` | напечатать версию и выйти | |
+| `-i, --interactive` | спрашивать всё, что не задано | выкл. |
+| `-o, --output <файл>` | текстовый файл результата | `out.dat` |
+| `-D, --state <файл>` | двоичный файл состояния, продолжается, если существует | `out.dst` |
+| `--restart` | удалить файл состояния и начать с нуля | выкл. |
+| `-n, --samples <N>` | число образцов / ориентаций | `1` |
+| `-a, --theta-min <град>` | нижняя граница фазовых углов | `0` |
+| `-b, --theta-max <град>` | верхняя граница фазовых углов | `180` |
+| `-s, --theta-step <град>` | шаг по фазовому углу | `10` |
+| `-O, --orientation <режим>` | `fixed` или `mc` | `fixed` |
+| `--psi --iota --kappa <град>` | повороты, только для фиксированной ориентации | `0` |
+| `-p, --planes <N>` | число плоскостей рассеяния | `1` |
+| `-t, --target <имя\|1..14>` | тип частицы, см. таблицу ниже | обязательно |
+| `-g, --grid <i> [j l]` | размеры решётки, степени двойки; одно значение — куб | обязательно |
+| `-x, --size-parameter <x>` | параметр размера частицы | обязательно |
+| `-m, --material <mre> <mi>` | показатель преломления материала; повторяется для смеси | обязательно |
+| `--seeds <s>...` | случайные seed'ы, по одному на материал | случайно |
+| `--aspect <b/a> <c/a>` | отношения осей (типы 2, 3, 5, 9, 10, 13) | |
+| `--radius-ratio <R1/R2>` | отношение радиусов (тип 12) | |
+| `--levels <N>` | число иерархических уровней (тип 13) | |
+| `--bites <N>`, `--depth <r>` | поверхностный слой (тип 10) | |
+| `--packing <rho>` | объёмная плотность (типы 6, 7, 8, 14) | |
+| `--monomer-radius <r>`, `--monomer-length-ratio <l/r>` | форма мономера (типы 6, 7, 8) | |
+| `-f, --shape-file <файл>` | файл с формой частицы (тип 11) | |
+| `-P, --polarizability <модель>` | `1`…`5` или `cm,cmrr,cmnr,ildr,ldr` | `1` |
+| `-e, --tolerance <err>` | порог невязки `Error_max` | `1e-3` |
+| `-S, --max-steps <N>` | максимальное число итераций | `20` |
+| `-F, --fft <метод>` | `0`/`ct` Кули–Тьюки, `1`/`rb` Радер–Бреннер | `0` |
+| `-M, --solver <метод>` | `0`…`3` или `cg,aa,bicgstab,simple` | `0` |
+| `--tau <множитель>` | весовой множитель, нужен методу `3` | |
+| `-j, --threads <N>` | рабочих потоков, `0` = авто | `0` |
+| `--seed <u64>` | seed для воспроизводимых прогонов | случайно |
 
-Число фазовых углов равно `(theta_up − theta_inf)/theta_step + 1`.
+Число фазовых углов равно `(theta_max − theta_min)/theta_step + 1`.
+Размеры решётки обязаны быть степенями двойки; неверный размер теперь
+отвергается, а не приводит к чтению за границей FFT-буферов.
+
+Списочные опции принимают обе формы записи, они эквивалентны:
+
+```sh
+./dda_fft.out --material 1.5 0.01 --grid 64 64 64
+./dda_fft.out --material 1.5,0.01 --grid 64,64,64
+```
 
 ### Пример: сфера, решётка 64³
 
@@ -387,16 +457,23 @@ git config core.hooksPath .githooks
 # фазовые углы 0..180 с шагом 10°, фиксированная ориентация, 1 образец,
 # одна плоскость рассеяния, сфера, m = 1.5 + 0.01i, 64 x 64 x 64, x = 20,
 # Клаузиус–Моссотти, Error_max = 1e-3, 20 шагов, Кули–Тьюки, метод решения 0
-./dda_fft.out 0 180 10 out.dst out.dat 1 0 0 0 0 1 1 1.5 0.01 \
-              64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --target sphere --material 1.5 0.01 --grid 64 --size-parameter 20
 ```
 
-Для усреднения по 100 случайным ориентациям нужно заменить число образцов и режим
-ориентации и указать число плоскостей рассеяния:
+Для усреднения по 100 случайным ориентациям нужно задать режим усреднения и
+число плоскостей рассеяния:
 
 ```sh
-./dda_fft.out 0 180 10 out.dst out.dat 100 1 1 1 1.5 0.01 \
-              64 64 64 20 1 0.001 20 0 0
+./dda_fft.out --samples 100 --orientation mc --planes 1 \
+              --target sphere --material 1.5 0.01 --grid 64 --size-parameter 20
+```
+
+Смесь задаётся повторением `--material`; случайным типам нужен ещё один seed
+на каждый материал:
+
+```sh
+./dda_fft.out --target random-sphere --material 1.5 0.01 --material 1.33 0.0 \
+              --seeds 1234 5678 --grid 64 --size-parameter 20
 ```
 
 ### Вывод
@@ -428,8 +505,11 @@ Cabs=…            Cext=…
 позволяет память под приватные рабочие массивы. Явно:
 
 ```sh
-DDA_THREADS=4 ./dda_fft.out …
+./dda_fft.out --threads 4 …
 ```
+
+Переменная окружения `DDA_THREADS` по-прежнему учитывается, если `--threads`
+не задан.
 
 **Лучшее число потоков зависит от размера решётки**, потому что ограничение —
 полоса пропускания памяти, а не ядра: на 8-ядерном Apple M1 измеренный оптимум
@@ -502,6 +582,12 @@ DDA_THREADS=4 ./dda_fft.out …
 * `Max_Step` ограничивает число итераций; прогон считается сошедшимся, когда
   невязка опускается ниже `Error_max`. На трудных частицах может потребоваться
   несколько сотен шагов.
+* **Генерация частицы может зависнуть** для случайных червеобразных целей (6, 7, 8) и
+  для иерархической (13), когда запрошенная геометрия не помещается: размещение
+  червей и поиск затравок в `particle.cpp` повторяются без ограничения числа
+  попыток. Подбирайте `--packing`, `--monomer-*` и размер решётки так, чтобы
+  частица помещалась, а в скриптах ставьте внешний таймаут. Подробнее — раздел 7.6
+  [REPORT.md](REPORT.md).
 * Память растёт примерно как **0.34 кБ на ячейку решётки для каждого потока** плюс
   около 0.38 кБ на ячейку для матрицы взаимодействия, общей для всех потоков.
   Один поток на решётке 128³ занимает примерно 1.4 ГБ. Точный расчёт и наибольшая
@@ -513,7 +599,8 @@ DDA_THREADS=4 ./dda_fft.out …
 
 | Файл | Содержимое |
 |---|---|
-| `main.cpp` | разбор аргументов, цикл по образцам, пул потоков, вывод |
+| `main.cpp` | цикл по образцам, пул потоков, вывод |
+| `options.cpp` | разбор командной строки (argtable3), проверки, интерактивный опрос |
 | `dda_func.cpp` | решатель DDA, свёртки, скалярные произведения, поле в дальней зоне |
 | `fft_func.cpp` | трёхмерное БПФ |
 | `fft_kernel.hpp` | смешанное radix-4/8 ядро 1-D БПФ, используется в `fft_func.cpp` |
@@ -521,7 +608,8 @@ DDA_THREADS=4 ./dda_fft.out …
 | `complex.cpp`, `cvector.cpp` | комплексная арифметика, 3-векторы и матрицы 3×3 |
 | `mmuller.cpp` | матрицы Джонса и Мюллера |
 | `randomize.cpp` | генерация случайных чисел |
-| `function.hpp`, `cplx.h`, `cvector.hpp`, `complex.hpp`, `mmuller.hpp`, `randomize.hpp` | объявления |
+| `function.hpp`, `cplx.h`, `cvector.hpp`, `complex.hpp`, `mmuller.hpp`, `randomize.hpp`, `options.hpp` | объявления |
 | `compile` | скрипт сборки |
+| `third_party/argtable3/` | вендоренная argtable3 v3.3.1 (BSD-3-Clause), разбор опций |
 | `bench/` | отдельный харнесс для 1-D ядра: дельтатесты, точность, A/B-замеры |
 | `REPORT.md` | отчёт об оптимизации: профиль, изменения, замеры, отвергнутые идеи |

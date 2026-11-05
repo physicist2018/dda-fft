@@ -41,6 +41,8 @@ def main():
     ap.add_argument("new")
     ap.add_argument("--floor", type=float, default=1e-3,
                     help="relative-to-max magnitude below which an element is noise")
+    ap.add_argument("--max-rel", type=float, default=None,
+                    help="exit 1 if the worst significant relative error exceeds this")
     args = ap.parse_args()
 
     (ca_r, ce_r), rows_r = parse(args.ref)
@@ -57,7 +59,8 @@ def main():
     scale = max(abs(v) for r in rows_r for v in r[1:])
     floor = args.floor * scale
 
-    worst_sig = (0.0, None)
+    worst_sig = 0.0
+    worst_sig_at = None
     n_noise = 0
     worst_noise = 0.0
 
@@ -66,17 +69,29 @@ def main():
         for k, (a, b) in enumerate(zip(rr[1:], rn[1:])):
             e = relerr(a, b)
             if abs(a) >= floor or abs(b) >= floor:
-                if e > worst_sig[0]:
-                    worst_sig = (e, (angle, k))
+                if worst_sig_at is None or e > worst_sig:
+                    worst_sig = e
+                    worst_sig_at = (angle, k)
             else:
                 n_noise += 1
                 if e > worst_noise:
                     worst_noise = e
 
-    print(f"significant elements: worst rel = {worst_sig[0]:.2e} "
-          f"at angle {worst_sig[1][0]:g}, element {worst_sig[1][1]}")
+    if worst_sig_at is None:
+        print("significant elements: none above the noise floor")
+    else:
+        print(f"significant elements: worst rel = {worst_sig:.2e} "
+              f"at angle {worst_sig_at[0]:g}, element {worst_sig_at[1]}")
     print(f"noise-level elements: {n_noise}, worst rel = {worst_noise:.2e} "
           f"(expected to differ)")
+
+    if args.max_rel is not None:
+        worst = max(worst_sig, relerr(ca_r, ca_n), relerr(ce_r, ce_n))
+        if worst > args.max_rel:
+            print(f"FAIL: worst relative error {worst:.2e} exceeds {args.max_rel:.2e}")
+            return 1
+        print(f"OK: worst relative error {worst:.2e} within {args.max_rel:.2e}")
+
     return 0
 
 

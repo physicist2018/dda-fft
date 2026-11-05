@@ -12,6 +12,12 @@
 void
 random_init(void);
 
+/* Same as random_init(), but with a caller supplied base seed, so that a run
+   can be repeated exactly (--seed). */
+
+void
+random_init_seed(unsigned long long seed);
+
 unsigned long long
 random_base_seed(void);
 
