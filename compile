@@ -1,4 +1,6 @@
+set -e
 echo compiling DDA source code
 rm -f dda_fft.out
-g++ -O3 -std=c++17 -pthread *.cpp -o dda_fft.out
+cc -O2 -std=c11 -c third_party/argtable3/argtable3.c -o third_party/argtable3/argtable3.o
+g++ -O3 -std=c++17 -pthread *.cpp third_party/argtable3/argtable3.o -o dda_fft.out
 echo exec file is dda_fft.out

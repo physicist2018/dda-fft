@@ -26,6 +26,14 @@ random_init()
 }
 
 
+void
+random_init_seed(unsigned long long seed)
+{
+  g_base_seed = seed;
+  dda_srand(seed);
+}
+
+
 unsigned long long
 random_base_seed()
 {
